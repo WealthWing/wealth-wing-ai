@@ -16,7 +16,7 @@ from src.error_handlers import register_error_handlers
 from src.middleware.auth import AuthMiddleware
 from src.middleware.request_logging import RequestLoggingMiddleware
 from src.middleware.security_headers import SecurityHeadersMiddleware
-from src.routers import health_check
+from src.routers import health_check, wing
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -53,6 +53,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     app.state.settings = settings
 
     app.include_router(health_check.router, prefix="/health", tags=["health"])
+    app.include_router(wing.router, prefix="/agents/wing", tags=["agents"])
     register_error_handlers(app)
 
     app.add_middleware(AuthMiddleware, settings=settings)

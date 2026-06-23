@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     model: str = Field(default="openai/gpt-oss-120b", alias="MODEL")
 
     together_api_key: SecretStr = Field(alias="TOGETHER_API_KEY", default="")
+    wealth_wing_data_url: Optional[str] = Field(
+        default=None, alias="WEALTH_WING_DATA_URL"
+    )
     wealth_wing_data_health_url: Optional[str] = Field(
         default=None, alias="WEALTH_WING_DATA_HEALTH_URL"
     )

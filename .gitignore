@@ -1,0 +1,31 @@
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Virtual environments
+.venv/
+venv/
+venv-*/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Packaging/build artifacts
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Local editor/OS files
+.vscode/
+.DS_Store
+
+# Local helper scripts
+boto-sign-in.py
+/plans

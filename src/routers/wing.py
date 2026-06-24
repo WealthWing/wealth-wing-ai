@@ -24,12 +24,14 @@ async def invoke_wing_agent(
         {
             "messages": [HumanMessage(content=payload.message)],
             "additional_prompt": payload.additional_prompt,
+            "profile": payload.profile,
         }
     )
 
     return WingAgentResponse(
         messages=[_serialize_message(message) for message in state.get("messages", [])],
         additional_prompt=state.get("additional_prompt"),
+        profile=state.get("profile"),
         resolved_system_prompt=state.get("resolved_system_prompt", ""),
         enabled_tools=state.get("enabled_tools", ()),
         metadata=state.get("metadata", {}),

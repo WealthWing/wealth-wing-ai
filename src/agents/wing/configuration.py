@@ -14,7 +14,6 @@ class WingAgentConfiguration:
     recursion_limit: int = 25
     timeout_seconds: float = 30.0
     system_prompt_name: str = "default"
-    enabled_tools: tuple[str, ...] = ("echo_context",)
     stream: bool = False
     debug: bool = False
     metadata: Mapping[str, str] = field(default_factory=dict)

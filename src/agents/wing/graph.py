@@ -17,8 +17,8 @@ def build_graph(
     nodes = WingAgentNodes(settings=settings, configuration=configuration)
 
     graph = StateGraph(WingAgentState)
-    graph.add_node("prepare_context", nodes.prepare_context)
-    graph.add_edge(START, "prepare_context")
-    graph.add_edge("prepare_context", END)
+    graph.add_node("load_profile", nodes.load_profile)
+    graph.add_edge(START, "load_profile")
+    graph.add_edge("load_profile", END)
 
     return graph.compile()

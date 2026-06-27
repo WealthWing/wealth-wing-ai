@@ -3,10 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from src.agents.wing.configuration import WingAgentConfiguration
-from src.agents.wing.prompts import get_system_prompt
-from src.agents.wing.profiles import DEFAULT_PROFILE, get_profile
+from src.agents.wing.profiles import PROFILES
 from src.agents.wing.state import WingAgentState
-from src.agents.wing.tools import get_tools
 from src.config import Settings
 
 
@@ -15,20 +13,26 @@ class WingAgentNodes:
     settings: Settings
     configuration: WingAgentConfiguration
 
-    def prepare_context(self, state: WingAgentState) -> WingAgentState:
-        profile_id = state.get("profile") or DEFAULT_PROFILE
-        profile = get_profile(profile_id)
-        tools = get_tools(profile_id)
-        resolved_system_prompt = "\n\n".join(
-            (
-                get_system_prompt(self.configuration).strip(),
-                profile["instructions"].strip(),
-            )
-        )
+    def load_profile(self, state: WingAgentState) -> WingAgentState:
+        """Load the agent profile based on the provided state."""
+        profile = state.get("agent_profile")
 
+        if profile is None:
+            return {
+                "validation_errors": [
+                    *state.get("validation_errors", []),
+                    "agent_profile is required",
+                ],
+            }
+
+        agent_system_profile = PROFILES.get(profile)
+        if agent_system_profile is None:
+            return {
+                "validation_errors": [
+                    *state.get("validation_errors", []),
+                    f"Invalid agent_profile: {profile}",
+                ],
+            }
         return {
-            "profile": profile_id,
-            "resolved_system_prompt": resolved_system_prompt,
-            "enabled_tools": tuple(tool.name for tool in tools),
-            "metadata": dict(self.configuration.metadata),
+            "agent_system_profile": agent_system_profile,
         }

@@ -1,16 +1,7 @@
 from __future__ import annotations
 
-from typing import TypedDict
-
-from langchain_core.tools import BaseTool
-
-from src.agents.wing.state import ProfileId
+from src.agents.wing.state import ProfileId, WingAgentProfile
 from src.agents.wing.tools import echo_context
-
-
-class WingAgentProfile(TypedDict):
-    instructions: str
-    tools: tuple[BaseTool, ...]
 
 
 DEFAULT_PROFILE: ProfileId = "insights"

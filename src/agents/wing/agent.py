@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from langchain_openai import ChatOpenAI
+
 from src.agents.wing.configuration import WingAgentConfiguration
 from src.agents.wing.graph import build_graph
 from src.agents.wing.state import WingAgentState
@@ -32,3 +34,13 @@ class WingAgent:
             state,
             config={"recursion_limit": self.configuration.recursion_limit},
         )
+
+    def _build_llm(self) -> ChatOpenAI:
+        return ChatOpenAI(
+            model=self.configuration.default_model,
+            api_key=self.settings.together_api_key,
+            base_url=self.settings.together_api_base,
+            temperature=self.configuration.temperature,
+            max_completion_tokens=self.configuration.max_tokens,
+            timeout=self.configuration.timeout_seconds)
+            

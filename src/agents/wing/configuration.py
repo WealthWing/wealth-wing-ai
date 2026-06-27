@@ -10,9 +10,10 @@ from src.config import Settings
 class WingAgentConfiguration:
     default_model: str
     temperature: float = 0.2
-    max_tokens: int | None = None
-    recursion_limit: int = 25
+    max_tokens: int = 3000
+    recursion_limit: int = 10
     timeout_seconds: float = 30.0
+    max_retries: int = 1
     system_prompt_name: str = "default"
     stream: bool = False
     debug: bool = False

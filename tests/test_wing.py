@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from main import create_app
 from src.agents.wing.configuration import WingAgentConfiguration
+from src.agents.wing.nodes import WingAgentNodes
 from src.agents.wing.profiles import get_profile
 from src.agents.wing.prompts import get_system_prompt
 from src.config import Settings
@@ -91,4 +92,19 @@ def test_wing_agent_route_uses_explicit_insights_profile():
         "resolved_system_prompt": expected_prompt("insights"),
         "enabled_tools": ["echo_context"],
         "metadata": {},
+    }
+
+
+def test_wing_agent_load_profile_returns_error_state_without_profile():
+    settings = make_settings()
+    configuration = WingAgentConfiguration.from_settings(settings)
+    nodes = WingAgentNodes(settings=settings, configuration=configuration)
+
+    state = nodes.load_profile({"messages": [], "validation_errors": ["existing"]})
+
+    assert state == {
+        "validation_errors": [
+            "existing",
+            "agent_profile is required",
+        ],
     }

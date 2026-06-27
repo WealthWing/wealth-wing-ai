@@ -15,3 +15,4 @@ def get_tools(profile: ProfileId) -> tuple[BaseTool, ...]:
     from src.agents.wing.profiles import get_profile
 
     return get_profile(profile)["tools"]
+

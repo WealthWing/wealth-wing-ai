@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Annotated, Any, Literal, TypedDict
 
 from langchain_core.messages import BaseMessage
+from langchain_core.tools import BaseTool
 from langgraph.graph.message import add_messages
 from pydantic import BaseModel
 
@@ -10,8 +11,13 @@ from pydantic import BaseModel
 ProfileId = Literal["insights", "imports", "planning"]
 
 
+class WingAgentProfile(TypedDict):
+    instructions: str
+    tools: tuple[BaseTool, ...]
+
+
 class RouteDecision(BaseModel):
-    profile: ProfileId
+    agent_profile: ProfileId
     reason: str
 
 
@@ -20,7 +26,10 @@ class WingAgentState(TypedDict, total=False):
     # user
     user_id: str
     organization_id: str
-    profile: ProfileId
+    agent_profile: ProfileId
+
+    # system profile
+    agent_system_profile: WingAgentProfile
 
     tool_results: list[dict]
     validation_errors: list[str]

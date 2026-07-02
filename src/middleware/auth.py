@@ -37,7 +37,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         self.public_paths = frozenset(self.settings.public_paths)
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        print("CHECK MIDDLEWARE TRIGGERED:", request.method, request.url.path)
+        
         if request.url.path in self.public_paths:
             return await call_next(request)
 

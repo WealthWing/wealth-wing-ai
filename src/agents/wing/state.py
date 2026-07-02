@@ -1,14 +1,41 @@
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AnyMessage
 from langchain_core.tools import BaseTool
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel
-
+from pydantic import BaseModel, Field
+from typing import Any, List, Literal, Optional
+from datetime import datetime, timezone
 
 ProfileId = Literal["insights", "imports", "planning"]
+
+class FilterByInputs(BaseModel):
+    field_name: str
+    values: List[str]
+
+class StandardParams(BaseModel):
+    """
+    Example of a standard set of parameters
+
+    filter_by_inputs:[{"field_name": "parent_id", "values": ["7"]}, {"field_name": "file_type", "values": ["pdf"]}]
+    page:1
+    page_size:20
+    sort_order:asc
+    sort_by:file_size
+    from_date: "2021-01-01T00:00:00"
+    to_date: "2021-01-31T23:59:59"
+    """
+
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1, le=100)
+    sort_by: Optional[str] = None
+    sort_order: Literal["asc", "desc"] = "desc"
+    search: Optional[str] = None
+    from_date: Optional[datetime] = None
+    to_date: Optional[datetime] = None
+
 
 
 class WingAgentProfile(TypedDict):
@@ -21,23 +48,76 @@ class RouteDecision(BaseModel):
     reason: str
 
 
-class WingAgentState(TypedDict, total=False):
-    messages: Annotated[list[BaseMessage], add_messages]
-    # user
+class ResolvedFilters(BaseModel):
+    params: StandardParams = Field(default_factory=StandardParams)
+    date_source: Literal[
+        "explicit",
+        "default_last_completed_month",
+        "default_last_30_days",
+        "not_applicable",
+    ] = "not_applicable"
+
+
+class IntentDecision(TypedDict):
+    intent: Literal[
+        "summarize_spending",
+        "list_transactions",
+        "compare_spending",
+        "account_overview",
+        "subscription_review",
+        "project_spending",
+        "unknown",
+    ]
+    confidence: float
+    needs_clarification: bool
+    clarification_question: str | None
+
+
+class ToolResult(TypedDict):
+    result_id: str
+    result_type: str
+    data: dict[str, Any]
+    source_tool: str
+
+
+class UIBlock(TypedDict):
+    id: str
+    component: str
+    data_ref: str
+    title: NotRequired[str]
+    props: NotRequired[dict[str, Any]]
+
+
+class PresentationPlan(TypedDict):
+    blocks: list[UIBlock]
+
+
+class CurrentTurn(TypedDict, total=False):
+    turn_id: str
+    user_input: str
+    intent: IntentDecision
+    filters: ResolvedFilters
+    tool_results: list[ToolResult]
+    presentation: PresentationPlan
+    final_answer: str
+    error: str
+
+
+class WingRuntimeContext(TypedDict, total=False):
     user_id: str
     organization_id: str
     agent_profile: ProfileId
-
-    # system profile
-    agent_system_profile: WingAgentProfile
-
-    tool_results: list[dict]
-    validation_errors: list[str]
-    retry_count: int
-
-    ui_response: dict
-
     additional_prompt: str | None
     resolved_system_prompt: str
     enabled_tools: tuple[str, ...]
     metadata: dict[str, Any]
+
+
+class WingGraphState(TypedDict, total=False):
+    messages: Annotated[list[AnyMessage], add_messages]
+    current_turn_id: str | None
+    #turns: dict[str, CurrentTurn]
+    current_turn: CurrentTurn
+
+
+WingAgentState = WingGraphState

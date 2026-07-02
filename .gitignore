@@ -28,4 +28,5 @@ dist/
 
 # Local helper scripts
 boto-sign-in.py
+/debug_nodes.py
 /plans

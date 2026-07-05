@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from src.agents.wing.state import ProfileId, WingAgentProfile
-from src.agents.wing.tools import echo_context, get_transactions_summary, get_transactions_by_category
+from src.agents.wing.tools import get_spending_by_category, get_transactions_summary, get_transactions_by_category, get_transactions
 
 
 DEFAULT_PROFILE: ProfileId = "insights"
@@ -24,7 +24,7 @@ PROFILES: dict[ProfileId, WingAgentProfile] = {
             "You are read-only."
         ),
         "tools": (
-            echo_context, get_transactions_summary, get_transactions_by_category
+            get_spending_by_category, get_transactions_summary, get_transactions_by_category, get_transactions  
         ),
     },
     "planning": {

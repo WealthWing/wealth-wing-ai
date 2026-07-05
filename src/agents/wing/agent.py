@@ -14,6 +14,7 @@ if __package__ in {None, ""}:
 
 from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
+from pydantic import BaseModel
 
 from src.schemas.wing import WingAgentRequest
 
@@ -169,6 +170,22 @@ def _serialize_message(message: BaseMessage) -> dict[str, str]:
     }
 
 
+def _serialize_for_json(value: Any) -> Any:
+    if isinstance(value, BaseMessage):
+        return _serialize_message(value)
+
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+
+    if isinstance(value, dict):
+        return {key: _serialize_for_json(item) for key, item in value.items()}
+
+    if isinstance(value, (list, tuple)):
+        return [_serialize_for_json(item) for item in value]
+
+    return value
+
+
 def _messages_from_state(state: WingAgentState) -> list[AnyMessage]:
     messages = state.get("messages", [])
     return list(messages)
@@ -256,7 +273,7 @@ async def _run_manual_call() -> None:
     parser.add_argument(
         "message",
         nargs="?",
-        default="Can you explain how is my spending by category?",
+        default="What was my net cash flow?",
     )
     parser.add_argument(
         "--profile",
@@ -278,14 +295,15 @@ async def _run_manual_call() -> None:
     print(
         json.dumps(
             {
-                "messages": [
-                    _serialize_message(message)
-                    for message in state.get("messages", [])
-                ],
+                #"messages": [
+                #    _serialize_message(message)
+                #    for message in state.get("messages", [])
+                #],
                 #"profile": agent.last_runtime_context.get("agent_profile"),
                 #"resolved_system_prompt": agent.last_runtime_context.get(
                 #    "resolved_system_prompt"
                 #),
+                "current_turn": _serialize_for_json(state.get("current_turn", {})),
                 "enabled_tools": agent.last_runtime_context.get("enabled_tools", ()),
                 #"metadata": agent.last_runtime_context.get("metadata", {}),
                 #"current_turn": state.get("current_turn", {}),

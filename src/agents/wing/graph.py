@@ -39,6 +39,7 @@ def build_graph(
     if tools:
         graph.add_node("tools", ToolNode(tools))
         graph.add_node("resolve_filters", nodes.resolve_filters)
+        graph.add_node("collect_results", nodes.collect_results)
         
         graph.add_conditional_edges(
             "llm",
@@ -46,7 +47,8 @@ def build_graph(
             {True: "resolve_filters", False: END},
         )
         graph.add_edge("resolve_filters", "tools")
-        graph.add_edge("tools", "llm")
+        graph.add_edge("tools", "collect_results")
+        graph.add_edge("collect_results", "llm")
     else:
         graph.add_edge("llm", END)
 

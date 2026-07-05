@@ -1,4 +1,6 @@
 import asyncio
+import json
+from datetime import datetime
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -11,11 +13,12 @@ from langchain_core.messages import (
 )
 
 from main import create_app
-from src.agents.wing.agent import WingAgent
+from src.agents.wing.agent import WingAgent, _serialize_for_json
 from src.agents.wing.configuration import WingAgentConfiguration
 from src.agents.wing.nodes import WingAgentNodes
 from src.agents.wing.profiles import get_profile
 from src.agents.wing.prompts import get_system_prompt
+from src.agents.wing.state import ResolvedFilters, StandardParams
 from src.config import Settings
 from src.routers import wing
 from src.schemas.wing import WingAgentRequest
@@ -254,6 +257,33 @@ def test_wing_agent_builds_runtime_context(monkeypatch):
     assert context["enabled_tools"] == tuple(
         tool.name for tool in get_profile("insights")["tools"]
     )
+
+
+def test_wing_agent_debug_output_serializes_current_turn_models():
+    current_turn = {
+        "filters": ResolvedFilters(
+            params=StandardParams(from_date=datetime(2026, 6, 1, 0, 0, 0)),
+            date_source="explicit",
+        )
+    }
+
+    serialized = _serialize_for_json(current_turn)
+
+    assert json.loads(json.dumps(serialized)) == {
+        "filters": {
+            "params": {
+                "page": 1,
+                "page_size": 20,
+                "sort_by": None,
+                "sort_order": "desc",
+                "search": None,
+                "filter_by": [],
+                "from_date": "2026-06-01T00:00:00",
+                "to_date": None,
+            },
+            "date_source": "explicit",
+        }
+    }
 
 
 def test_wing_agent_nodes_read_profile_and_prompt_from_runtime_context():

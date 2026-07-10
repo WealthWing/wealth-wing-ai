@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from datetime import date
-from typing import Any
-
 import httpx
+from pydantic import ValidationError
 
-from src.providers.ww_data_schemas import TransactionsAllResponse
+from src.providers.ww_data_schemas import (
+    TransactionsAllResponse,
+    TransactionsQueryParams,
+)
 
 
 class WWDataClientError(Exception):
@@ -36,31 +37,16 @@ class WWDataClient:
     async def get_transactions(
         self,
         *,
-        access_token: str | None,
-        category: str | None = None,
-        start_date: date | None = None,
-        end_date: date | None = None,
-        limit: int = 50,
+        access_token: str,
+        params: TransactionsQueryParams,
     ) -> TransactionsAllResponse:
-        params: dict[str, Any] = {
-            "page": 1,
-            "page_size": limit,
-        }
-
-        if start_date is not None:
-            params["from_date"] = start_date.isoformat()
-
-        if end_date is not None:
-            params["to_date"] = end_date.isoformat()
-
-        headers: dict[str, str] = {}
-        if access_token is not None:
-            headers["Authorization"] = f"Bearer {access_token}"
+        query_params = params.model_dump(mode="json", exclude_none=True)
+        headers = {"Authorization": f"Bearer {access_token}"}
 
         try:
             response = await self._http_client.get(
                 f"{self._base_url}/transaction/all",
-                params=params,
+                params=query_params,
                 headers=headers,
             )
             response.raise_for_status()
@@ -80,6 +66,6 @@ class WWDataClient:
             raise WWDataUnavailableError("ww-data is unavailable") from exc
 
         try:
-            return response.json()
-        except ValueError as exc:
+            return TransactionsAllResponse.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
             raise WWDataResponseError("ww-data returned invalid JSON") from exc

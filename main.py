@@ -16,6 +16,7 @@ from src.error_handlers import register_error_handlers
 from src.middleware.auth import AuthMiddleware
 from src.middleware.request_logging import RequestLoggingMiddleware
 from src.middleware.security_headers import SecurityHeadersMiddleware
+from src.providers.ww_data_client import WWDataClient
 from src.routers import health_check, wing
 
 @asynccontextmanager
@@ -31,6 +32,15 @@ async def lifespan(app: FastAPI):
             "User-Agent": "wealth-wing-ai/1.0",
             "Accept": "application/json",
         },
+    )
+    settings = app.state.settings
+    app.state.ww_data_client = (
+        WWDataClient(
+            http_client=app.state.http_client,
+            base_url=settings.wealth_wing_data_url,
+        )
+        if settings.wealth_wing_data_url
+        else None
     )
 
     try:

@@ -259,6 +259,28 @@ def test_wing_agent_builds_runtime_context(monkeypatch):
     )
 
 
+def test_wing_agent_keeps_runtime_credentials_private(monkeypatch):
+    captured = patch_agent_graph(monkeypatch)
+    provider_client = object()
+    agent = WingAgent(
+        settings=make_settings(),
+        ww_data_client=provider_client,
+        access_token="secret-token",
+    )
+
+    asyncio.run(
+        agent.ainvoke(
+            WingAgentRequest(message="hello", agent_profile="insights")
+        )
+    )
+
+    assert captured["context"]["ww_data_client"] is provider_client
+    assert captured["context"]["access_token"] == "secret-token"
+    assert "ww_data_client" not in agent.last_runtime_context
+    assert "access_token" not in agent.last_runtime_context
+    assert "secret-token" not in json.dumps(_serialize_for_json(agent.last_runtime_context))
+
+
 def test_wing_agent_debug_output_serializes_current_turn_models():
     current_turn = {
         "filters": ResolvedFilters(

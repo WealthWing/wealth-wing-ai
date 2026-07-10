@@ -1,7 +1,17 @@
 from pydantic import BaseModel, Field
-from typing import Literal, Optional, TypedDict
+from typing import Literal, Optional
 from datetime import datetime
 from uuid import UUID
+
+
+class TransactionsQueryParams(BaseModel):
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=20, ge=1)
+    sort_by: Literal["amount", "date", "title"] | None = None
+    sort_order: Literal["asc", "desc"] = "desc"
+    search: str | None = None
+    from_date: datetime | None = None
+    to_date: datetime | None = None
 
 class TransactionBase(BaseModel):
     category_id: UUID
@@ -28,7 +38,7 @@ class TransactionResponse(TransactionBase):
 
 
 class TransactionsAllResponse(BaseModel):
-    transactions: list[TransactionResponse] = []
+    transactions: list[TransactionResponse] = Field(default_factory=list)
     has_more: bool = False
     total_pages: int = 0
     total_count: int = 0

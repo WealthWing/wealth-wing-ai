@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from langchain_core.tools import ToolException
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode
@@ -40,7 +41,10 @@ def build_graph(
     graph.add_edge("load_profile", "llm")
 
     if tools:
-        graph.add_node("tools", ToolNode(tools))
+        graph.add_node(
+            "tools",
+            ToolNode(tools, handle_tool_errors=_safe_tool_error),
+        )
         graph.add_node("resolve_filters", nodes.resolve_filters)
         graph.add_node("collect_results", nodes.collect_results)
         graph.add_node("final_answer", nodes.final_response)
@@ -57,3 +61,9 @@ def build_graph(
         graph.add_edge("llm", "final_answer")
 
     return graph.compile()
+
+
+def _safe_tool_error(error: Exception) -> str:
+    if isinstance(error, ToolException):
+        return str(error)
+    return "The requested financial data could not be retrieved."

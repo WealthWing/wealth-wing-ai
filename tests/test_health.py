@@ -1,10 +1,16 @@
+import asyncio
+
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from starlette.requests import Request
+from starlette.responses import Response
 
 from main import create_app
 from src.config import Settings
 from src.error_handlers import register_error_handlers
+from src.middleware.auth import AuthMiddleware
 from src.middleware.request_logging import RequestLoggingMiddleware
+from src.providers.ww_data_client import WWDataClient
 from src.services import health as health_service
 
 
@@ -115,6 +121,62 @@ def test_protected_route_with_token_fails_closed_when_auth_is_not_configured():
     response = client.get("/not-public", headers={"Authorization": "Bearer token"})
 
     _assert_error_response(response, 503, "Authentication service unavailable")
+
+
+def test_auth_middleware_keeps_validated_token_in_request_state(monkeypatch):
+    settings = Settings(
+        ALLOWED_HOSTS="testserver",
+        COGNITO_JWKS_URL="https://auth.example.test/jwks",
+        COGNITO_ISSUER="https://auth.example.test/issuer",
+        COGNITO_CLIENT_ID="client-id",
+    )
+    middleware = AuthMiddleware(FastAPI(), settings=settings)
+
+    class FakeSigningKey:
+        key = object()
+
+    class FakeJwksClient:
+        def get_signing_key_from_jwt(self, token):
+            assert token == "secret-token"
+            return FakeSigningKey()
+
+    middleware.jwks_client = FakeJwksClient()
+    monkeypatch.setattr(
+        "src.middleware.auth.decode",
+        lambda *args, **kwargs: {"sub": "user-id"},
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "scheme": "https",
+            "server": ("testserver", 443),
+            "path": "/agents/wing/invoke",
+            "query_string": b"",
+            "headers": [(b"authorization", b"Bearer secret-token")],
+        }
+    )
+
+    async def call_next(next_request):
+        assert next_request.state.access_token == "secret-token"
+        assert next_request.state.user_uuid == "user-id"
+        return Response(status_code=200)
+
+    response = asyncio.run(middleware.dispatch(request, call_next))
+    assert response.status_code == 200
+
+
+def test_lifespan_builds_shared_ww_data_client():
+    settings = Settings(
+        ALLOWED_HOSTS="testserver",
+        COGNITO_JWKS_URL="",
+        COGNITO_ISSUER="",
+        COGNITO_CLIENT_ID="",
+        WEALTH_WING_DATA_URL="https://data.example.test",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        assert isinstance(client.app.state.ww_data_client, WWDataClient)
 
 
 def test_docs_are_disabled_by_default():

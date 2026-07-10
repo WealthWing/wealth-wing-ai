@@ -21,6 +21,7 @@ from src.agents.wing.state import (
     FinalAnswer,
     FilterByInputs,
     ResolvedFilters,
+    ToolResult,
     ToolResultPayload,
     WingGraphState,
     WingRuntimeContext,
@@ -290,16 +291,16 @@ Rules:
                 continue
 
             # tool_call_id is already unique for this agent run.
-            results_by_id[tool_message.tool_call_id] = (
-                {  # pyright: ignore[reportArgumentType]
-                    "result_id": tool_message.tool_call_id,
-                    "result_type": payload["result_type"],
-                    "source_tool": tool_name,
-                    "data": payload["data"],
-                    "metadata": payload.get("metadata", {}),
-                    "ui": payload.get("ui"),
-                }
-            )
+            result: ToolResult = {
+                "result_id": tool_message.tool_call_id,
+                "result_type": payload["result_type"],
+                "source_tool": tool_name,
+                "data": payload["data"],
+                "metadata": payload.get("metadata", {}),
+            }
+            if payload.get("ui") is not None:
+                result["ui"] = payload["ui"]
+            results_by_id[tool_message.tool_call_id] = result
 
         return {
             "current_turn": {
@@ -351,7 +352,8 @@ Rules:
             "tool_results": results_for_prompt,
         }
 
-        raw_answer = self.llm.with_structured_output(FinalAnswer).invoke(
+        raw_answer = await _ainvoke_model(
+            self.llm.with_structured_output(FinalAnswer),
             [
                 SystemMessage(content="""
 You are Wealth Wing's final financial response formatter.

@@ -68,6 +68,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
             request.state.user = payload
             request.state.user_uuid = user_uuid
+            request.state.access_token = token
         except PyJWTError as e:
             logger.warning("JWT validation failed: %s", e)
             return self._error_response(request, 401, "Invalid token")

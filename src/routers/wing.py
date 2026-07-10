@@ -18,7 +18,12 @@ async def invoke_wing_agent(
     request: Request,
 ) -> WingAgentResponse:
     settings = getattr(request.app.state, "settings", None) or get_settings()
-    agent = WingAgent(settings=settings, request=payload)
+    agent = WingAgent(
+        settings=settings,
+        request=payload,
+        ww_data_client=getattr(request.app.state, "ww_data_client", None),
+        access_token=getattr(request.state, "access_token", None),
+    )
 
     state = await agent.ainvoke(payload.message)
     runtime_context = agent.last_runtime_context

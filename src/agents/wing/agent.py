@@ -6,7 +6,7 @@ import json
 import sys
 from pathlib import Path
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 if __package__ in {None, ""}:
@@ -30,6 +30,7 @@ from src.agents.wing.state import (
 )
 from src.agents.wing.tools import get_tools
 from src.config import Settings, get_settings
+from src.providers.ww_data_client import WWDataClient
 
 
 class WingAgent:
@@ -38,12 +39,16 @@ class WingAgent:
         settings: Settings,
         configuration: WingAgentConfiguration | None = None,
         request: WingAgentRequest | None = None,
+        ww_data_client: WWDataClient | None = None,
+        access_token: str | None = None,
     ) -> None:
         self.settings = settings
         self.configuration = configuration or WingAgentConfiguration.from_settings(
             settings
         )
         self.request = request
+        self.ww_data_client = ww_data_client
+        self.access_token = access_token
         self.last_runtime_context: WingRuntimeContext = {}
 
     def invoke(self, message: str | WingAgentRequest | WingAgentState) -> WingAgentState:
@@ -55,7 +60,7 @@ class WingAgent:
     ) -> WingAgentState:
         state = self._build_initial_state(message)
         runtime_context = self._build_runtime_context(message)
-        self.last_runtime_context = runtime_context
+        self.last_runtime_context = _public_runtime_context(runtime_context)
         tools = get_tools(runtime_context.get("agent_profile", "imports"))
         tools_by_name = {tool.name: tool for tool in tools}
         llm = self._build_llm()
@@ -135,6 +140,10 @@ class WingAgent:
             context["user_id"] = user_id
         if organization_id:
             context["organization_id"] = organization_id
+        if self.ww_data_client is not None:
+            context["ww_data_client"] = self.ww_data_client
+        if self.access_token:
+            context["access_token"] = self.access_token
 
         return context
 
@@ -175,6 +184,17 @@ def _serialize_message(message: BaseMessage) -> dict[str, str]:
         "role": getattr(message, "type", "unknown"),
         "content": content if isinstance(content, str) else str(content),
     }
+
+
+def _public_runtime_context(context: WingRuntimeContext) -> WingRuntimeContext:
+    return cast(
+        WingRuntimeContext,
+        {
+            key: value
+            for key, value in context.items()
+            if key not in {"access_token", "ww_data_client"}
+        },
+    )
 
 
 def _serialize_for_json(value: Any) -> Any:
@@ -232,7 +252,8 @@ def _additional_prompt_from_message(
         return message.additional_prompt
 
     if isinstance(message, dict):
-        return message.get("additional_prompt")
+        additional_prompt = message.get("additional_prompt")
+        return additional_prompt if isinstance(additional_prompt, str) else None
 
     return request.additional_prompt if request else None
 

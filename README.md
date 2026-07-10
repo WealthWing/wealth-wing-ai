@@ -46,6 +46,7 @@ Important environment values:
 - `CORS_ORIGINS` should be a comma-separated list of trusted frontend origins.
 - `ALLOWED_HOSTS` should be a comma-separated list of valid API hostnames.
 - `TOGETHER_API_KEY` is required for the Together provider health check.
+- `WEALTH_WING_DATA_URL` is required for agents to retrieve real transaction data.
 - `WEALTH_WING_DATA_HEALTH_URL` enables the Wealth Wing Data health check.
 - Cognito JWT validation uses `COGNITO_JWKS_URL`, `COGNITO_ISSUER`, and `COGNITO_CLIENT_ID`.
 

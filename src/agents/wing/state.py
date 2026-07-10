@@ -8,6 +8,7 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import List, Optional
+from src.providers.ww_data_client import WWDataClient
 
 ProfileId = Literal["insights", "imports", "planning"]
 
@@ -31,7 +32,7 @@ class StandardParams(BaseModel):
 
     page: int = Field(default=1, ge=1)
     page_size: int = Field(default=20, ge=1, le=100)
-    sort_by: Optional[str] = None
+    sort_by: Literal["amount", "date", "title"] | None = None
     sort_order: Literal["asc", "desc"] = "desc"
     search: Optional[str] = None
     filter_by: list[FilterByInputs] = Field(default_factory=list)
@@ -81,7 +82,7 @@ class ToolResult(TypedDict):
     source_tool: str
     data: Any
     metadata: dict[str, Any]
-    ui: Optional[str]
+    ui: NotRequired[Optional[str]]
 
 
 class ToolResultPayload(TypedDict):
@@ -130,6 +131,8 @@ class WingRuntimeContext(TypedDict, total=False):
     resolved_system_prompt: str
     enabled_tools: tuple[str, ...]
     metadata: dict[str, Any]
+    ww_data_client: WWDataClient
+    access_token: str
 
 
 class WingGraphState(TypedDict, total=False):

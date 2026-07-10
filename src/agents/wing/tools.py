@@ -4,9 +4,15 @@ import sys
 from pathlib import Path
 from typing import Annotated, Any
 from datetime import datetime, timezone
-from langchain_core.tools import BaseTool, tool
-from langgraph.prebuilt import InjectedState
-from pydantic import BaseModel, Field
+from langchain_core.tools import BaseTool, ToolException, tool
+from langgraph.prebuilt import InjectedState, ToolRuntime
+from pydantic import BaseModel, Field, ValidationError
+from src.providers.ww_data_client import (
+    WWDataAuthorizationError,
+    WWDataClientError,
+    WWDataUnavailableError,
+)
+from src.providers.ww_data_schemas import TransactionResponse, TransactionsQueryParams
 from src.utils.format import format_cents
 
 if __package__ in {None, ""}:
@@ -17,6 +23,7 @@ from src.agents.wing.state import (
     ResolvedFilters,
     ToolResultPayload,
     WingGraphState,
+    WingRuntimeContext,
 )
 
 transactions_by_category = [
@@ -324,45 +331,73 @@ def get_transactions_summary(
         ui="transactions_summary_ui",
     )
     
-@tool    
-def get_transactions(
-    state: Annotated[WingGraphState, InjectedState()],
+@tool
+async def get_transactions(
     text: str,
+    runtime: ToolRuntime[WingRuntimeContext, WingGraphState],
 ) -> ToolResultPayload:
     """Return a paginated list of transactions matching the resolved filters."""
-    filters = state.get("current_turn", {}).get("filters", {})
-    search = _search_from_filters(filters)
-    category_values = _filter_values_from_filters(filters, "category")
-   
+    del text
+    filters = runtime.state.get("current_turn", {}).get("filters", {})
+    try:
+        resolved_filters = _coerce_resolved_filters(filters)
+    except (TypeError, ValidationError) as exc:
+        raise ToolException("Transaction request filters are invalid.") from exc
+
+    if resolved_filters.params.filter_by:
+        raise ToolException(
+            "Filtered transaction lists are not supported by the data service yet."
+        )
+
+    ww_data_client = runtime.context.get("ww_data_client")
+    access_token = runtime.context.get("access_token")
+    if ww_data_client is None:
+        raise ToolException("Transaction data service is not configured.")
+    if not access_token:
+        raise ToolException("Transaction data authorization is unavailable.")
+
+    params = resolved_filters.params
+    query = TransactionsQueryParams(
+        page=params.page,
+        page_size=params.page_size,
+        sort_by=params.sort_by,
+        sort_order=params.sort_order,
+        search=params.search,
+        from_date=params.from_date,
+        to_date=params.to_date,
+    )
+
+    try:
+        response = await ww_data_client.get_transactions(
+            access_token=access_token,
+            params=query,
+        )
+    except WWDataAuthorizationError as exc:
+        raise ToolException("Transaction data authorization failed.") from exc
+    except WWDataUnavailableError as exc:
+        raise ToolException("Transaction data service is unavailable.") from exc
+    except WWDataClientError as exc:
+        raise ToolException("Transaction data could not be retrieved.") from exc
 
     return _tool_result(
         result_type="transaction_list",
         data={
-    "transactions": [
-      {
-        "id": "uuid",
-        "date": "2026-06-14",
-        "title": "ShopRite",
-        "amount": format_cents(-8423),
-        "type": "expense",
-        "category": {
-          "id": "uuid",
-          "slug": "groceries",
-          "name": "Groceries"
+            "transactions": [
+                _serialize_transaction(transaction)
+                for transaction in response.transactions
+            ],
+            "page": params.page,
+            "page_size": params.page_size,
+            "total_count": response.total_count,
+            "total_pages": response.total_pages,
+            "has_more": response.has_more,
         },
-        "account": {
-          "id": "uuid",
-          "name": "Chase Checking",
-          "last_four": "6791"
-        }
-      }
-    ],
-    "next_cursor": "opaque-cursor",
-    "has_more": True
-  },
-        metadata={"filters": _serialize_tool_metadata(filters)},
+        metadata={
+            "filters": _serialize_tool_metadata(resolved_filters),
+            "source": "wealth-wing-data",
+        },
         ui="transactions_ui",
-    )    
+    )
 
 
 @tool
@@ -441,6 +476,39 @@ def _serialize_tool_metadata(value: Any) -> Any:
         return [_serialize_tool_metadata(item) for item in value]
 
     return value
+
+
+def _coerce_resolved_filters(value: Any) -> ResolvedFilters:
+    if isinstance(value, ResolvedFilters):
+        return value
+    if isinstance(value, dict):
+        return ResolvedFilters.model_validate(value)
+    return ResolvedFilters()
+
+
+def _serialize_transaction(transaction: TransactionResponse) -> dict[str, Any]:
+    account = None
+    if transaction.account_id is not None or transaction.account_name is not None:
+        account = {
+            "id": str(transaction.account_id) if transaction.account_id else None,
+            "name": transaction.account_name,
+        }
+
+    return {
+        "id": str(transaction.uuid),
+        "date": transaction.date.isoformat() if transaction.date else None,
+        "title": transaction.title,
+        "description": transaction.description,
+        "amount_cents": transaction.amount,
+        "amount": format_cents(transaction.amount, transaction.currency or "USD"),
+        "currency": transaction.currency,
+        "type": transaction.type,
+        "category": {
+            "id": str(transaction.category_id),
+            "name": transaction.category,
+        },
+        "account": account,
+    }
 
 
 def _search_from_filters(filters: Any) -> str | None:

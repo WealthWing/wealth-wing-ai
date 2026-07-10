@@ -4,18 +4,21 @@ import asyncio
 import ast
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.runtime import Runtime
+from pydantic import BaseModel
 from src.agents.wing.configuration import WingAgentConfiguration
 from src.agents.wing.profiles import PROFILES
 from src.agents.wing.state import (
     CurrentTurn,
+    FinalAnswer,
     FilterByInputs,
     ResolvedFilters,
     ToolResultPayload,
@@ -23,6 +26,8 @@ from src.agents.wing.state import (
     WingRuntimeContext,
 )
 from src.config import Settings
+
+_StructuredOutput = TypeVar("_StructuredOutput", bound=BaseModel)
 
 
 @dataclass(frozen=True)
@@ -32,6 +37,7 @@ class WingAgentNodes:
     tools_by_name: dict[str, Any]
     llm: ChatOpenAI
     llm_with_tools: ChatOpenAI
+    llm_factory: Callable[[float | None], ChatOpenAI] | None = None
 
     def load_profile(
         self,
@@ -96,12 +102,13 @@ class WingAgentNodes:
             timezone = ZoneInfo("UTC")
 
         now = datetime.now(timezone)
-        structured_llm = self.llm.with_structured_output(ResolvedFilters)
+        structured_llm = self._llm_for_temperature(0).with_structured_output(
+            ResolvedFilters
+        )
         raw_filters: object = await _ainvoke_model(
             structured_llm,
             [
-                SystemMessage(
-                    content=f"""
+                SystemMessage(content=f"""
 You extract filters from a Wealth Wing user request.
 
 Current datetime: {now.isoformat()}
@@ -118,12 +125,14 @@ Rules:
 - Search is only for free-text merchant or description matching. Example:
   "Find transactions with 'Starbucks' in the description" should set search="Starbucks".
 - Return only the structured output.
-                    """.strip()
-                ),
+                    """.strip()),
                 HumanMessage(content=user_input),
             ],
         )
-        extracted_filters = _coerce_resolved_filters(raw_filters)
+        extracted_filters = _validate_structured_output(
+            raw_filters,
+            ResolvedFilters,
+        )
 
         params = extracted_filters.params
         existing_category_values = _filter_values(params.filter_by, "category")
@@ -178,7 +187,13 @@ Rules:
             "filters": resolved_filters,
         }
         return {"current_turn": next_current_turn}
-    
+
+    def _llm_for_temperature(self, temperature: float | None = None) -> ChatOpenAI:
+        if self.llm_factory is None:
+            return self.llm
+
+        return self.llm_factory(temperature)
+
     def collect_results(self, state: WingGraphState) -> dict:
         """
         Reads only the ToolMessages produced by the most recent ToolNode run,
@@ -221,10 +236,14 @@ Rules:
             None,
         )
 
-        calls_by_id = {
-            tool_call["id"]: tool_call
-            for tool_call in (latest_tool_call_message.tool_calls or [])
-        } if latest_tool_call_message else {}
+        calls_by_id = (
+            {
+                tool_call["id"]: tool_call
+                for tool_call in (latest_tool_call_message.tool_calls or [])
+            }
+            if latest_tool_call_message
+            else {}
+        )
 
         # Preserve earlier results if the LLM requested several rounds of tools.
         results_by_id = {
@@ -271,14 +290,16 @@ Rules:
                 continue
 
             # tool_call_id is already unique for this agent run.
-            results_by_id[tool_message.tool_call_id] = {  # pyright: ignore[reportArgumentType]
-                "result_id": tool_message.tool_call_id,
-                "result_type": payload["result_type"],
-                "source_tool": tool_name,
-                "data": payload["data"],
-                "metadata": payload.get("metadata", {}),
-                "ui": payload.get("ui"),
-            }
+            results_by_id[tool_message.tool_call_id] = (
+                {  # pyright: ignore[reportArgumentType]
+                    "result_id": tool_message.tool_call_id,
+                    "result_type": payload["result_type"],
+                    "source_tool": tool_name,
+                    "data": payload["data"],
+                    "metadata": payload.get("metadata", {}),
+                    "ui": payload.get("ui"),
+                }
+            )
 
         return {
             "current_turn": {
@@ -287,14 +308,82 @@ Rules:
                 "tool_errors": tool_errors,
             }
         }
-        
+
     async def final_response(self, state: WingGraphState):
-        """Finalize the current turn and prepare for the next one."""
+        """
+        Converts successful tool results into the user-facing answer.
+
+        It does not fetch data, resolve filters, choose a UI component,
+        or modify any tool result.
+        """
         current_turn = state.get("current_turn", {})
-        
+        tool_results = current_turn.get("tool_results", [])
+        tool_errors = current_turn.get("tool_errors", [])
+
+        # No successful data means do not ask the LLM to invent an answer.
+        if not tool_results:
+            answer = (
+                "I could not retrieve the financial data needed for that answer."
+                if tool_errors
+                else "I do not have data available for that request."
+            )
+
+            return {
+                "messages": [AIMessage(content=answer)],
+                "current_turn": {
+                    **current_turn,
+                    "final_answer": answer,
+                },
+            }
+        # UI does not belong in the LLM prompt. It is already determined by tools.
+        results_for_prompt: list[dict[str, Any]] = [
+            {
+                "result_type": result["result_type"],
+                "data": result["data"],
+                "metadata": result.get("metadata", {}),
+            }
+            for result in tool_results
+        ]
+
+        answer_input = {
+            "user_question": current_turn.get("user_input", ""),
+            "resolved_filters": current_turn.get("filters", {}),
+            "tool_results": results_for_prompt,
+        }
+
+        raw_answer = self.llm.with_structured_output(FinalAnswer).invoke(
+            [
+                SystemMessage(content="""
+You are Wealth Wing's final financial response formatter.
+
+Use only the supplied tool results as factual source material.
+
+Return concise Markdown only.
+
+Rules:
+- Never invent a number, date range, trend, merchant, category, or cause.
+- Do not claim a period such as "last month" unless from_date and to_date exist.
+- When dates exist, mention the period clearly.
+- Monetary values are integer cents. Format them as USD.
+- income is a positive inflow.
+- expense is a positive outflow.
+- net is already calculated as income minus expenses.
+- Do not explain internal tools, graph state, metadata, or implementation.
+- Be direct and concise.
+- Keep the answer in neutral tone. Avoid prescriptive or judgmental language.
+                    """.strip()),
+                HumanMessage(content=json.dumps(answer_input, default=str)),
+            ]
+        )
+
+        final_answer = _validate_structured_output(raw_answer, FinalAnswer)
 
         return {
-            "current_turn": json.loads(json.dumps(current_turn)),
+            "messages": [AIMessage(content=final_answer.answer)],
+            "current_turn": {
+                **current_turn,
+                "final_answer": final_answer.answer,
+            },
         }
 
     def _turn_error(self, state: WingGraphState, error: str) -> WingGraphState:
@@ -305,14 +394,11 @@ Rules:
         return {"current_turn": next_current_turn}
 
 
-def _coerce_resolved_filters(value: object) -> ResolvedFilters:
-    if isinstance(value, ResolvedFilters):
-        return value
-
-    if isinstance(value, dict):
-        return ResolvedFilters.model_validate(value)
-
-    raise TypeError(f"Expected ResolvedFilters output, got {type(value).__name__}")
+def _validate_structured_output(
+    value: object,
+    schema: type[_StructuredOutput],
+) -> _StructuredOutput:
+    return schema.model_validate(value)
 
 
 def _coerce_tool_result_payload(content: Any) -> ToolResultPayload:

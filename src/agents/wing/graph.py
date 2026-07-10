@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from langchain_openai import ChatOpenAI
@@ -19,6 +20,7 @@ def build_graph(
     tools: tuple[Any, ...],
     llm: ChatOpenAI,
     llm_with_tools: ChatOpenAI,
+    llm_factory: Callable[[float | None], ChatOpenAI] | None = None,
 ) -> Any:
     nodes = WingAgentNodes(
         settings=settings,
@@ -26,6 +28,7 @@ def build_graph(
         tools_by_name=tools_by_name,
         llm=llm,
         llm_with_tools=llm_with_tools,
+        llm_factory=llm_factory,
     )
 
     graph = StateGraph(WingGraphState, context_schema=WingRuntimeContext)
@@ -40,16 +43,17 @@ def build_graph(
         graph.add_node("tools", ToolNode(tools))
         graph.add_node("resolve_filters", nodes.resolve_filters)
         graph.add_node("collect_results", nodes.collect_results)
+        graph.add_node("final_answer", nodes.final_response)
         
         graph.add_conditional_edges(
             "llm",
             nodes._has_tool_calls,
-            {True: "resolve_filters", False: END},
+            {True: "resolve_filters", False: "final_answer"},
         )
         graph.add_edge("resolve_filters", "tools")
         graph.add_edge("tools", "collect_results")
         graph.add_edge("collect_results", "llm")
     else:
-        graph.add_edge("llm", END)
+        graph.add_edge("llm", "final_answer")
 
     return graph.compile()

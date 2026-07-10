@@ -65,6 +65,7 @@ class WingAgent:
             tools_by_name=tools_by_name,
             tools=tools,
             llm=llm,
+            llm_factory=self._build_llm,
             llm_with_tools=self.bind_llm_tools(llm, tools),
         )
 
@@ -137,9 +138,13 @@ class WingAgent:
 
         return context
 
-    def build_llm_with_tools(self, tools: tuple[Any, ...]) -> Any:
+    def build_llm_with_tools(
+        self,
+        tools: tuple[Any, ...],
+        temperature: float | None = None,
+    ) -> Any:
         """Build a chat model, optionally bound to the tools for a profile."""
-        llm = self._build_llm()
+        llm = self._build_llm(temperature=temperature)
         return self.bind_llm_tools(llm, tools)
 
     def bind_llm_tools(self, llm: Any, tools: tuple[Any, ...]) -> Any:
@@ -149,12 +154,14 @@ class WingAgent:
 
         return llm.bind_tools(list(tools))
 
-    def _build_llm(self) -> ChatOpenAI:
+    def _build_llm(self, temperature: float | None = None) -> ChatOpenAI:
         return ChatOpenAI(
             model=self.configuration.default_model,
             api_key=self.settings.together_api_key,
             base_url=self.settings.together_api_base,
-            temperature=self.configuration.temperature,
+            temperature=(
+                self.configuration.temperature if temperature is None else temperature
+            ),
             max_completion_tokens=self.configuration.max_tokens,
             timeout=self.configuration.timeout_seconds,
             max_retries=self.configuration.max_retries,
@@ -273,7 +280,7 @@ async def _run_manual_call() -> None:
     parser.add_argument(
         "message",
         nargs="?",
-        default="What was my net cash flow?",
+        default="What was my net cash flow? also how is my spending by category?",
     )
     parser.add_argument(
         "--profile",

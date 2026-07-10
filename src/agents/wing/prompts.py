@@ -21,6 +21,7 @@ important:
  
 """
 
+
 SYSTEM_PROMPTS = {
     "default": DEFAULT_SYSTEM_PROMPT,
 }
@@ -31,3 +32,5 @@ def get_system_prompt(configuration: WingAgentConfiguration) -> str:
         configuration.system_prompt_name,
         DEFAULT_SYSTEM_PROMPT,
     )
+
+

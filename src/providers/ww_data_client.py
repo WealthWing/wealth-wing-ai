@@ -5,6 +5,8 @@ from typing import Any
 
 import httpx
 
+from src.providers.ww_data_schemas import TransactionsAllResponse
+
 
 class WWDataClientError(Exception):
     pass
@@ -39,7 +41,7 @@ class WWDataClient:
         start_date: date | None = None,
         end_date: date | None = None,
         limit: int = 50,
-    ) -> dict[str, Any]:
+    ) -> TransactionsAllResponse:
         params: dict[str, Any] = {
             "page": 1,
             "page_size": limit,

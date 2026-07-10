@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from langchain_core.tools import BaseTool, tool
 from langgraph.prebuilt import InjectedState
 from pydantic import BaseModel, Field
+from src.utils.format import format_cents
 
 if __package__ in {None, ""}:
     sys.path.append(str(Path(__file__).resolve().parents[3]))
@@ -273,7 +274,7 @@ def get_spending_by_category(
     return _tool_result(
         result_type="spending_by_category",
         data={
-            "total_spent_cents": 184500,
+            "total_spent": format_cents(184500),
             "categories": [
                 {
                     "category_id": "uuid",
@@ -313,11 +314,11 @@ def get_transactions_summary(
     return _tool_result(
         result_type="transaction_summary",
         data={
-    "income_cents": 520000,
-    "expense_cents": 184500,
-    "net_cents": 335500,
+    "income_cents": format_cents(520000),
+    "expense_cents": format_cents(184500),
+    "net_cents": format_cents(335500),
     "transaction_count": 73,
-    "average_monthly_expense_cents": 184500
+    "average_monthly_expense_cents": format_cents(184500)
   },
         metadata=filters.model_dump(mode="json") if isinstance(filters, ResolvedFilters) else {},
         ui="transactions_summary_ui",
@@ -342,7 +343,7 @@ def get_transactions(
         "id": "uuid",
         "date": "2026-06-14",
         "title": "ShopRite",
-        "amount_cents": -8423,
+        "amount": format_cents(-8423),
         "type": "expense",
         "category": {
           "id": "uuid",

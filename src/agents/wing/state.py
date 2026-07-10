@@ -102,6 +102,13 @@ class ToolResultPayload(TypedDict):
 #class PresentationPlan(TypedDict):
 #    blocks: list[UIBlock]
 
+class FinalAnswer(BaseModel):
+    answer: str = Field(
+        description=(
+            "Concise financial answer grounded only in the supplied tool results."
+        )
+    )
+
 
 class CurrentTurn(TypedDict, total=False):
     turn_id: str

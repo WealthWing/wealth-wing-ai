@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 from fastapi import APIRouter, Request
 from langchain_core.messages import AIMessage, BaseMessage
@@ -46,7 +46,7 @@ def _serialize_message(message: BaseMessage) -> WingAgentMessage:
     )
 
 
-def _response_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
+def _response_messages(messages: Sequence[BaseMessage]) -> list[BaseMessage]:
     return [
         message
         for message in messages

@@ -35,8 +35,6 @@ def build_graph(
     graph = StateGraph(WingGraphState, context_schema=WingRuntimeContext)
     graph.add_node("load_profile", nodes.load_profile)
     graph.add_node("llm", nodes._call_llm)
-    
-
     graph.add_edge(START, "load_profile")
     graph.add_edge("load_profile", "llm")
 
@@ -56,9 +54,16 @@ def build_graph(
         )
         graph.add_edge("resolve_filters", "tools")
         graph.add_edge("tools", "collect_results")
-        graph.add_edge("collect_results", "llm")
+        graph.add_conditional_edges(
+            "collect_results",
+            nodes.route_after_tool_results,
+            {"llm": "llm", "final_answer": "final_answer"},
+        )
+        graph.add_edge("final_answer", END)
     else:
-        graph.add_edge("llm", "final_answer")
+        # Profiles without tools return the LLM response directly. The
+        # final_response node is only used to format tool-backed results.
+        graph.add_edge("llm", END)
 
     return graph.compile()
 

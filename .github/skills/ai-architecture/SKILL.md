@@ -1,6 +1,6 @@
 ---
 name: ai-architecture
-description: 'Create optimized multi-stage Dockerfiles for any language or framework'
+description: Design or refactor WealthWing AI application architecture across APIs, orchestration, agents, tools, prompts, retrieval, evaluation, and observability. Use for architecture planning or cross-layer AI feature design; do not use for isolated bug fixes.
 ---
 
 # AI Architecture Skill
@@ -104,3 +104,4 @@ app/
     ai/
     retrieval/
     evals/
+```

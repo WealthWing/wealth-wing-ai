@@ -124,6 +124,8 @@ class CurrentTurn(TypedDict, total=False):
 
 
 class WingRuntimeContext(TypedDict, total=False):
+    request_id: str
+    agent_run_id: str
     user_id: str
     organization_id: str
     agent_profile: ProfileId

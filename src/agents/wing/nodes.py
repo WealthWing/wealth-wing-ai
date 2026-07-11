@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import ast
 import json
+import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from src.agents.wing.state import (
 from src.config import Settings
 
 _StructuredOutput = TypeVar("_StructuredOutput", bound=BaseModel)
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -49,11 +51,19 @@ class WingAgentNodes:
         profile = runtime.context.get("agent_profile")
 
         if profile is None:
-            return self._turn_error(state, "agent_profile is required")
+            return self._turn_error(state, runtime, "agent_profile is required")
 
         if profile not in PROFILES:
-            return self._turn_error(state, f"Invalid agent_profile: {profile}")
+            return self._turn_error(
+                state,
+                runtime,
+                f"Invalid agent_profile: {profile}",
+            )
 
+        logger.info(
+            "wing_node_completed",
+            extra=_log_extra(state, runtime, "load_profile"),
+        )
         return {}
 
     async def _call_llm(
@@ -71,7 +81,20 @@ class WingAgentNodes:
         if system_prompt:
             messages = [SystemMessage(content=system_prompt), *messages]
 
-        response = await _ainvoke_model(self.llm_with_tools, messages)
+        log_extra = _log_extra(state, runtime, "llm")
+        logger.info("wing_llm_started", extra=log_extra)
+        try:
+            response = await _ainvoke_model(self.llm_with_tools, messages)
+        except Exception:
+            logger.exception("wing_llm_failed", extra=log_extra)
+            raise
+        logger.info(
+            "wing_llm_completed",
+            extra={
+                **log_extra,
+                "tool_call_count": len(getattr(response, "tool_calls", []) or []),
+            },
+        )
         return {"messages": [response]}
 
     def _has_tool_calls(self, state: WingGraphState) -> bool:
@@ -106,10 +129,13 @@ class WingAgentNodes:
         structured_llm = self._llm_for_temperature(0).with_structured_output(
             ResolvedFilters
         )
-        raw_filters: object = await _ainvoke_model(
-            structured_llm,
-            [
-                SystemMessage(content=f"""
+        log_extra = _log_extra(state, runtime, "resolve_filters")
+        logger.info("wing_filter_resolution_started", extra=log_extra)
+        try:
+            raw_filters: object = await _ainvoke_model(
+                structured_llm,
+                [
+                    SystemMessage(content=f"""
 You extract filters from a Wealth Wing user request.
 
 Current datetime: {now.isoformat()}
@@ -127,13 +153,16 @@ Rules:
   "Find transactions with 'Starbucks' in the description" should set search="Starbucks".
 - Return only the structured output.
                     """.strip()),
-                HumanMessage(content=user_input),
-            ],
-        )
-        extracted_filters = _validate_structured_output(
-            raw_filters,
-            ResolvedFilters,
-        )
+                    HumanMessage(content=user_input),
+                ],
+            )
+            extracted_filters = _validate_structured_output(
+                raw_filters,
+                ResolvedFilters,
+            )
+        except Exception:
+            logger.exception("wing_filter_resolution_failed", extra=log_extra)
+            raise
 
         params = extracted_filters.params
         existing_category_values = _filter_values(params.filter_by, "category")
@@ -187,6 +216,7 @@ Rules:
             **current_turn,
             "filters": resolved_filters,
         }
+        logger.info("wing_filter_resolution_completed", extra=log_extra)
         return {"current_turn": next_current_turn}
 
     def _llm_for_temperature(self, temperature: float | None = None) -> ChatOpenAI:
@@ -195,9 +225,12 @@ Rules:
 
         return self.llm_factory(temperature)
 
-    def collect_results(self, state: WingGraphState) -> dict:
+    def collect_results(
+        self,
+        state: WingGraphState,
+        runtime: Runtime[WingRuntimeContext] | None = None,
+    ) -> dict:
         """
-        Reads only the ToolMessages produced by the most recent ToolNode run,
         normalizes them, and saves them under current_turn.tool_results.
 
         Does not call tools.
@@ -220,6 +253,10 @@ Rules:
         recent_tool_messages.reverse()
 
         if not recent_tool_messages:
+            logger.warning(
+                "wing_tool_results_missing",
+                extra=_log_extra(state, runtime, "collect_results"),
+            )
             return {
                 "current_turn": {
                     **current_turn,
@@ -263,6 +300,15 @@ Rules:
 
             # ToolNode may return an error ToolMessage rather than raising.
             if getattr(tool_message, "status", None) == "error":
+                logger.warning(
+                    "wing_tool_failed",
+                    extra={
+                        **_log_extra(state, runtime, "collect_results"),
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_message.tool_call_id,
+                        "tool_error_message": str(tool_message.content),
+                    },
+                )
                 tool_errors.append(
                     {
                         "tool_call_id": tool_message.tool_call_id,
@@ -281,6 +327,14 @@ Rules:
                 TypeError,
                 ValueError,
             ) as error:
+                logger.warning(
+                    "wing_tool_result_invalid",
+                    extra={
+                        **_log_extra(state, runtime, "collect_results"),
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_message.tool_call_id,
+                    },
+                )
                 tool_errors.append(
                     {
                         "tool_call_id": tool_message.tool_call_id,
@@ -302,6 +356,14 @@ Rules:
                 result["ui"] = payload["ui"]
             results_by_id[tool_message.tool_call_id] = result
 
+        logger.info(
+            "wing_tool_results_collected",
+            extra={
+                **_log_extra(state, runtime, "collect_results"),
+                "tool_result_count": len(results_by_id),
+                "tool_error_count": len(tool_errors),
+            },
+        )
         return {
             "current_turn": {
                 **current_turn,
@@ -310,7 +372,11 @@ Rules:
             }
         }
 
-    async def final_response(self, state: WingGraphState):
+    async def final_response(
+        self,
+        state: WingGraphState,
+        runtime: Runtime[WingRuntimeContext] | None = None,
+    ):
         """
         Converts successful tool results into the user-facing answer.
 
@@ -329,6 +395,13 @@ Rules:
                 else "I do not have data available for that request."
             )
 
+            logger.warning(
+                "wing_final_answer_without_results",
+                extra={
+                    **_log_extra(state, runtime, "final_answer"),
+                    "tool_error_count": len(tool_errors),
+                },
+            )
             return {
                 "messages": [AIMessage(content=answer)],
                 "current_turn": {
@@ -352,10 +425,13 @@ Rules:
             "tool_results": results_for_prompt,
         }
 
-        raw_answer = await _ainvoke_model(
-            self.llm.with_structured_output(FinalAnswer),
-            [
-                SystemMessage(content="""
+        log_extra = _log_extra(state, runtime, "final_answer")
+        logger.info("wing_final_answer_started", extra=log_extra)
+        try:
+            raw_answer = await _ainvoke_model(
+                self.llm.with_structured_output(FinalAnswer),
+                [
+                    SystemMessage(content="""
 You are Wealth Wing's final financial response formatter.
 
 Use only the supplied tool results as factual source material.
@@ -374,11 +450,15 @@ Rules:
 - Be direct and concise.
 - Keep the answer in neutral tone. Avoid prescriptive or judgmental language.
                     """.strip()),
-                HumanMessage(content=json.dumps(answer_input, default=str)),
-            ]
-        )
+                    HumanMessage(content=json.dumps(answer_input, default=str)),
+                ]
+            )
+            final_answer = _validate_structured_output(raw_answer, FinalAnswer)
+        except Exception:
+            logger.exception("wing_final_answer_failed", extra=log_extra)
+            raise
 
-        final_answer = _validate_structured_output(raw_answer, FinalAnswer)
+        logger.info("wing_final_answer_completed", extra=log_extra)
 
         return {
             "messages": [AIMessage(content=final_answer.answer)],
@@ -388,12 +468,44 @@ Rules:
             },
         }
 
-    def _turn_error(self, state: WingGraphState, error: str) -> WingGraphState:
+    def _turn_error(
+        self,
+        state: WingGraphState,
+        runtime: Runtime[WingRuntimeContext],
+        error: str,
+    ) -> WingGraphState:
+        logger.warning(
+            "wing_profile_validation_failed",
+            extra=_log_extra(state, runtime, "load_profile"),
+        )
         next_current_turn: CurrentTurn = {
             **state.get("current_turn", {}),
             "error": error,
         }
         return {"current_turn": next_current_turn}
+
+    @staticmethod
+    def route_after_tool_results(state: WingGraphState) -> str:
+        """Do not retry a failed tool call indefinitely."""
+        tool_errors = state.get("current_turn", {}).get("tool_errors", [])
+        return "final_answer" if tool_errors else "llm"
+
+
+def _log_extra(
+    state: WingGraphState,
+    runtime: Runtime[WingRuntimeContext] | None,
+    node: str,
+) -> dict[str, Any]:
+    context = runtime.context if runtime is not None else {}
+    current_turn = state.get("current_turn", {})
+    return {
+        "request_id": context.get("request_id"),
+        "agent_run_id": context.get("agent_run_id"),
+        "turn_id": current_turn.get("turn_id"),
+        "agent_profile": context.get("agent_profile"),
+        "node": node,
+        "message_count": len(state.get("messages", [])),
+    }
 
 
 def _validate_structured_output(

@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import logging
 from typing import Any, Sequence
 
 from fastapi import APIRouter, Request
@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage, BaseMessage
 from src.agents.wing.agent import WingAgent
 from src.config import get_settings
 from src.schemas.wing import WingAgentMessage, WingAgentRequest, WingAgentResponse
-
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -23,10 +23,14 @@ async def invoke_wing_agent(
         request=payload,
         ww_data_client=getattr(request.app.state, "ww_data_client", None),
         access_token=getattr(request.state, "access_token", None),
+        request_id=getattr(request.state, "request_id", None),
     )
 
     state = await agent.ainvoke(payload.message)
     runtime_context = agent.last_runtime_context
+    logger.info("Wing agent invoked with state: %s", state)
+    logger.info("Wing agent runtime context: %s", runtime_context)
+    
 
     return WingAgentResponse(
         messages=[

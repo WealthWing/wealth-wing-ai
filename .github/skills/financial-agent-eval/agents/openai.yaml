@@ -1,0 +1,4 @@
+interface:
+  display_name: "Financial Agent Eval"
+  short_description: "Evaluate financial agent grounding"
+  default_prompt: "Use $financial-agent-eval to evaluate this Wing agent change for grounding and safety."

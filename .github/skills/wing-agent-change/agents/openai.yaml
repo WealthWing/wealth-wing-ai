@@ -1,0 +1,4 @@
+interface:
+  display_name: "Wing Agent Change"
+  short_description: "Change Wing agent behavior safely"
+  default_prompt: "Use $wing-agent-change to implement and verify this Wing agent behavior change."

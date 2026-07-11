@@ -1,0 +1,4 @@
+interface:
+  display_name: "Provider Contract Change"
+  short_description: "Change provider contracts safely"
+  default_prompt: "Use $provider-contract-change to update and verify this provider contract."

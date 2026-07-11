@@ -265,6 +265,13 @@ def test_collect_results_records_invalid_tool_payload() -> None:
             "message": "Invalid tool result format: result_type is required",
         }
     ]
+    assert nodes.route_after_tool_results(result) == "final_answer"
+
+
+def test_route_after_tool_results_continues_without_errors() -> None:
+    nodes = make_nodes(ResolvedFilters())
+
+    assert nodes.route_after_tool_results({"current_turn": {}}) == "llm"
 
 
 def test_collect_results_accepts_injected_state_toolnode_payload() -> None:

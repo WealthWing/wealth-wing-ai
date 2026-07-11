@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import sys
+import time
 from pathlib import Path
 from collections.abc import Sequence
 from typing import Any, cast
@@ -33,6 +35,9 @@ from src.config import Settings, get_settings
 from src.providers.ww_data_client import WWDataClient
 
 
+logger = logging.getLogger(__name__)
+
+
 class WingAgent:
     def __init__(
         self,
@@ -41,6 +46,7 @@ class WingAgent:
         request: WingAgentRequest | None = None,
         ww_data_client: WWDataClient | None = None,
         access_token: str | None = None,
+        request_id: str | None = None,
     ) -> None:
         self.settings = settings
         self.configuration = configuration or WingAgentConfiguration.from_settings(
@@ -49,6 +55,7 @@ class WingAgent:
         self.request = request
         self.ww_data_client = ww_data_client
         self.access_token = access_token
+        self.request_id = request_id
         self.last_runtime_context: WingRuntimeContext = {}
 
     def invoke(self, message: str | WingAgentRequest | WingAgentState) -> WingAgentState:
@@ -60,7 +67,14 @@ class WingAgent:
     ) -> WingAgentState:
         state = self._build_initial_state(message)
         runtime_context = self._build_runtime_context(message)
+        agent_run_id = str(uuid4())
+        runtime_context["agent_run_id"] = agent_run_id
+        if self.request_id:
+            runtime_context["request_id"] = self.request_id
         self.last_runtime_context = _public_runtime_context(runtime_context)
+        log_extra = _agent_log_extra(state, runtime_context)
+        started_at = time.perf_counter()
+        logger.info("wing_agent_started", extra=log_extra)
         tools = get_tools(runtime_context.get("agent_profile", "imports"))
         tools_by_name = {tool.name: tool for tool in tools}
         llm = self._build_llm()
@@ -73,12 +87,30 @@ class WingAgent:
             llm_factory=self._build_llm,
             llm_with_tools=self.bind_llm_tools(llm, tools),
         )
+        try:
+            result = await graph.ainvoke(
+                state,
+                context=runtime_context,
+                config={"recursion_limit": self.configuration.recursion_limit},
+            )
+        except Exception:
+            logger.exception(
+                "wing_agent_failed",
+                extra={
+                    **log_extra,
+                    "duration_ms": _duration_ms(started_at),
+                },
+            )
+            raise
 
-        return await graph.ainvoke(
-            state,
-            context=runtime_context,
-            config={"recursion_limit": self.configuration.recursion_limit},
+        logger.info(
+            "wing_agent_completed",
+            extra={
+                **_agent_log_extra(result, runtime_context),
+                "duration_ms": _duration_ms(started_at),
+            },
         )
+        return result
 
     def _build_initial_state(
         self,
@@ -197,6 +229,26 @@ def _public_runtime_context(context: WingRuntimeContext) -> WingRuntimeContext:
     )
 
 
+def _agent_log_extra(
+    state: WingAgentState,
+    context: WingRuntimeContext,
+) -> dict[str, Any]:
+    current_turn = state.get("current_turn", {})
+    return {
+        "request_id": context.get("request_id"),
+        "agent_run_id": context.get("agent_run_id"),
+        "turn_id": current_turn.get("turn_id"),
+        "agent_profile": context.get("agent_profile"),
+        "message_count": len(state.get("messages", [])),
+        "tool_result_count": len(current_turn.get("tool_results", [])),
+        "tool_error_count": len(current_turn.get("tool_errors", [])),
+    }
+
+
+def _duration_ms(started_at: float) -> float:
+    return round((time.perf_counter() - started_at) * 1000, 2)
+
+
 def _serialize_for_json(value: Any) -> Any:
     if isinstance(value, BaseMessage):
         return _serialize_message(value)
@@ -311,7 +363,9 @@ async def _run_manual_call() -> None:
     parser.add_argument("--additional-prompt", default=None)
     args = parser.parse_args()
 
-    agent = WingAgent(settings=get_settings())
+    settings = get_settings()
+    settings.configure_logging()
+    agent = WingAgent(settings=settings)
     state = await agent.ainvoke(
         WingAgentRequest(
             message=args.message,

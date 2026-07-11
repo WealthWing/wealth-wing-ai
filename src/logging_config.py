@@ -20,10 +20,21 @@ class JsonFormatter(logging.Formatter):
 
         for field in (
             "request_id",
+            "agent_run_id",
+            "turn_id",
+            "agent_profile",
+            "node",
+            "tool_name",
+            "tool_call_id",
+            "tool_error_message",
+            "message_count",
+            "tool_call_count",
+            "tool_result_count",
+            "tool_error_count",
+            "duration_ms",
             "method",
             "path",
             "status_code",
-            "duration_ms",
             "client_ip",
         ):
             value = getattr(record, field, None)
@@ -54,4 +65,3 @@ def configure_logging(log_level: str, json_logs: bool = True) -> None:
         )
 
     root_logger.addHandler(handler)
-

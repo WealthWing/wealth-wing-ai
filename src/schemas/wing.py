@@ -16,15 +16,33 @@ class WingAgentRequest(BaseModel):
     )
 
 
-class WingAgentMessage(BaseModel):
-    role: Literal["ai", "human", "system", "tool", "unknown"]
-    content: str
+AgentResultType = Literal[
+    "spending_by_category",
+    "transaction_summary",
+    "transaction_list",
+    "transactions_by_category",
+]
+
+
+class WingAgentResult(BaseModel):
+    """A UI-safe, structured result produced during the current turn."""
+
+    id: str
+    type: AgentResultType
+    data: dict[str, Any] | list[dict[str, Any]]
+    ui: str | None = None
+
+
+class WingAgentError(BaseModel):
+    code: Literal["agent_error", "data_unavailable"]
+    message: str
 
 
 class WingAgentResponse(BaseModel):
-    messages: list[WingAgentMessage]
-    resolved_system_prompt: str
-    enabled_tools: tuple[str, ...]
-    metadata: dict[str, Any]
-    additional_prompt: str | None = None
-    agent_profile: ProfileId | None = Field(default=None, serialization_alias="profile")
+    """The public outcome of one Wing agent turn."""
+
+    turn_id: str
+    answer: str
+    results: list[WingAgentResult] = Field(default_factory=list)
+    applied_filters: dict[str, Any] | None = None
+    error: WingAgentError | None = None

@@ -60,7 +60,13 @@ def patch_agent_graph(monkeypatch):
             captured["state"] = state
             captured["context"] = context
             captured["config"] = config
-            return state
+            return {
+                **state,
+                "current_turn": {
+                    **state["current_turn"],
+                    "final_answer": "Hello from Wing.",
+                },
+            }
 
     class FakeBoundLLM:
         pass
@@ -107,17 +113,13 @@ def test_wing_agent_route_invokes_with_runtime_context(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "messages": [{"role": "human", "content": "hello"}],
-        "additional_prompt": "Prefer concise answers.",
-        "profile": "imports",
-        "resolved_system_prompt": expected_prompt(
-            "imports",
-            "Prefer concise answers.",
-        ),
-        "enabled_tools": [],
-        "metadata": {},
-    }
+    body = response.json()
+    assert body["answer"] == "Hello from Wing."
+    assert body["results"] == []
+    assert body["applied_filters"] is None
+    assert body["error"] is None
+    assert body["turn_id"] == captured["state"]["current_turn"]["turn_id"]
+    assert set(body) == {"turn_id", "answer", "results", "applied_filters", "error"}
     assert set(captured["state"]) == {"current_turn_id", "messages", "current_turn"}
     assert captured["state"]["current_turn"]["user_input"] == "hello"
     assert captured["context"]["agent_profile"] == "imports"
@@ -143,21 +145,19 @@ def test_wing_agent_route_uses_explicit_insights_profile(monkeypatch):
 
     tool_names = [tool.name for tool in get_profile("insights")["tools"]]
     assert response.status_code == 200
-    assert response.json() == {
-        "messages": [{"role": "human", "content": "hello"}],
-        "additional_prompt": None,
-        "profile": "insights",
-        "resolved_system_prompt": expected_prompt("insights"),
-        "enabled_tools": tool_names,
-        "metadata": {},
-    }
+    body = response.json()
+    assert body["answer"] == "Hello from Wing."
+    assert body["results"] == []
+    assert body["applied_filters"] is None
+    assert body["error"] is None
+    assert body["turn_id"] == captured["state"]["current_turn"]["turn_id"]
     assert captured["tools"] == tool_names
     assert captured["bound_tools"] == tool_names
     assert captured["llm_type"] == "FakeLLM"
     assert captured["llm_with_tools_type"] == "FakeBoundLLM"
 
 
-def test_wing_agent_route_hides_intermediate_tool_call_messages(monkeypatch):
+def test_wing_agent_route_returns_sanitized_current_turn_results(monkeypatch):
     class FakeGraph:
         async def ainvoke(self, state, context, config):
             return {
@@ -179,7 +179,33 @@ def test_wing_agent_route_hides_intermediate_tool_call_messages(monkeypatch):
                     ),
                     AIMessage(content="finalHere is your category breakdown."),
                 ],
-                "current_turn": state["current_turn"],
+                "current_turn": {
+                    **state["current_turn"],
+                    "final_answer": "Here is your category breakdown.",
+                    "tool_results": [
+                        {
+                            "result_id": "call-1",
+                            "result_type": "transaction_list",
+                            "source_tool": "get_transactions",
+                            "metadata": {"upstream": "do not expose"},
+                            "ui": "transactions_ui",
+                            "data": {
+                                "transactions": [
+                                    {
+                                        "id": "transaction-1",
+                                        "title": "Coffee",
+                                        "amount_cents": 500,
+                                        "user_id": "private-user-id",
+                                        "provider_payload": "private",
+                                    }
+                                ],
+                                "page": 1,
+                                "total_count": 1,
+                                "provider_payload": "private",
+                            },
+                        }
+                    ],
+                },
             }
 
     class FakeLLM:
@@ -206,16 +232,31 @@ def test_wing_agent_route_hides_intermediate_tool_call_messages(monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["messages"] == [
-        {
-            "role": "human",
-            "content": "Can you explain my spending by category?",
-        },
-        {
-            "role": "ai",
-            "content": "Here is your category breakdown.",
-        },
-    ]
+    body = response.json()
+    assert body == {
+        "turn_id": body["turn_id"],
+        "answer": "Here is your category breakdown.",
+        "results": [
+            {
+                "id": "call-1",
+                "type": "transaction_list",
+                "ui": "transactions_ui",
+                "data": {
+                    "transactions": [
+                        {
+                            "id": "transaction-1",
+                            "title": "Coffee",
+                            "amount_cents": 500,
+                        }
+                    ],
+                    "page": 1,
+                    "total_count": 1,
+                },
+            }
+        ],
+        "applied_filters": None,
+        "error": None,
+    }
 
 
 def test_wing_agent_builds_initial_state_without_runtime_fields(monkeypatch):

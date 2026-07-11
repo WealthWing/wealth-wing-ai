@@ -61,9 +61,11 @@ def build_graph(
         )
         graph.add_edge("final_answer", END)
     else:
-        # Profiles without tools return the LLM response directly. The
-        # final_response node is only used to format tool-backed results.
-        graph.add_edge("llm", END)
+        # No-tool profiles still record their final answer in CurrentTurn so
+        # all endpoint responses have the same canonical source.
+        graph.add_node("record_direct_response", nodes.record_direct_response)
+        graph.add_edge("llm", "record_direct_response")
+        graph.add_edge("record_direct_response", END)
 
     return graph.compile()
 

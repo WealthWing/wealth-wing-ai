@@ -468,6 +468,29 @@ Rules:
             },
         }
 
+    def record_direct_response(self, state: WingGraphState) -> WingGraphState:
+        """Store a no-tool profile's final LLM response on the current turn."""
+        current_turn = state.get("current_turn", {})
+        last_message = state.get("messages", [])[-1] if state.get("messages") else None
+
+        if not isinstance(last_message, AIMessage) or last_message.tool_calls:
+            return {
+                "current_turn": {
+                    **current_turn,
+                    "final_answer": "I could not complete that request.",
+                    "error": "The agent did not return a final response.",
+                }
+            }
+
+        content = last_message.content
+        answer = content if isinstance(content, str) else str(content)
+        return {
+            "current_turn": {
+                **current_turn,
+                "final_answer": answer,
+            }
+        }
+
     def _turn_error(
         self,
         state: WingGraphState,

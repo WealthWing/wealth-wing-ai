@@ -274,6 +274,23 @@ def test_route_after_tool_results_continues_without_errors() -> None:
     assert nodes.route_after_tool_results({"current_turn": {}}) == "llm"
 
 
+def test_record_direct_response_stores_answer_on_current_turn() -> None:
+    nodes = make_nodes(ResolvedFilters())
+
+    result = nodes.record_direct_response(
+        {
+            "messages": [AIMessage(content="I can help reconcile that import.")],
+            "current_turn": {"turn_id": "turn-1", "user_input": "help"},
+        }
+    )
+
+    assert result["current_turn"] == {
+        "turn_id": "turn-1",
+        "user_input": "help",
+        "final_answer": "I can help reconcile that import.",
+    }
+
+
 def test_collect_results_accepts_injected_state_toolnode_payload() -> None:
     graph = StateGraph(ToolSmokeState)
     graph.add_node("tools", ToolNode([get_transactions_by_category]))

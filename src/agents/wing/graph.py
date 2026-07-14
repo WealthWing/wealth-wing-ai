@@ -21,6 +21,7 @@ def build_graph(
     tools: tuple[Any, ...],
     llm: ChatOpenAI,
     llm_with_tools: ChatOpenAI,
+    checkpointer: Any = None,
     llm_factory: Callable[[float | None], ChatOpenAI] | None = None,
 ) -> Any:
     nodes = WingAgentNodes(
@@ -67,7 +68,7 @@ def build_graph(
         graph.add_edge("llm", "record_direct_response")
         graph.add_edge("record_direct_response", END)
 
-    return graph.compile()
+    return graph.compile(checkpointer=checkpointer)
 
 
 def _safe_tool_error(error: Exception) -> str:

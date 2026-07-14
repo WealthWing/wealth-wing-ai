@@ -16,6 +16,7 @@ if __package__ in {None, ""}:
 
 from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage
 from langchain_openai import ChatOpenAI
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel
 
 from src.schemas.wing import WingAgentRequest
@@ -47,6 +48,8 @@ class WingAgent:
         ww_data_client: WWDataClient | None = None,
         access_token: str | None = None,
         request_id: str | None = None,
+        checkpointer: Any | None = None,
+        thread_id: str | None = None,
     ) -> None:
         self.settings = settings
         self.configuration = configuration or WingAgentConfiguration.from_settings(
@@ -56,6 +59,10 @@ class WingAgent:
         self.ww_data_client = ww_data_client
         self.access_token = access_token
         self.request_id = request_id
+        self.checkpointer = (
+            checkpointer if checkpointer is not None else InMemorySaver()
+        )
+        self.thread_id = thread_id
         self.last_runtime_context: WingRuntimeContext = {}
 
     def invoke(self, message: str | WingAgentRequest | WingAgentState) -> WingAgentState:
@@ -86,12 +93,18 @@ class WingAgent:
             llm=llm,
             llm_factory=self._build_llm,
             llm_with_tools=self.bind_llm_tools(llm, tools),
+            checkpointer=self.checkpointer,
         )
         try:
             result = await graph.ainvoke(
                 state,
                 context=runtime_context,
-                config={"recursion_limit": self.configuration.recursion_limit},
+                config={
+                    "recursion_limit": self.configuration.recursion_limit,
+                    "configurable": {
+                        "thread_id": self.thread_id or agent_run_id,
+                    },
+                },
             )
         except Exception:
             logger.exception(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, Field
 
@@ -9,6 +10,7 @@ from src.agents.wing.state import ProfileId
 
 class WingAgentRequest(BaseModel):
     message: str = Field(..., min_length=1)
+    thread_id: UUID | None = None
     additional_prompt: str | None = None
     agent_profile: ProfileId = Field(
         default="imports",
@@ -41,6 +43,7 @@ class WingAgentError(BaseModel):
 class WingAgentResponse(BaseModel):
     """The public outcome of one Wing agent turn."""
 
+    thread_id: UUID
     turn_id: str
     answer: str
     results: list[WingAgentResult] = Field(default_factory=list)

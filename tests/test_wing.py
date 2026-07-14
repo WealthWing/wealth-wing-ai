@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import datetime
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -11,6 +12,7 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langgraph.checkpoint.memory import InMemorySaver
 
 from main import create_app
 from src.agents.wing.agent import WingAgent, _serialize_for_json
@@ -20,6 +22,7 @@ from src.agents.wing.profiles import get_profile
 from src.agents.wing.prompts import get_system_prompt
 from src.agents.wing.state import ResolvedFilters, StandardParams
 from src.config import Settings
+from src.dependencies import get_wing_checkpointer
 from src.routers import wing
 from src.schemas.wing import WingAgentRequest
 
@@ -81,6 +84,7 @@ def patch_agent_graph(monkeypatch):
         captured["tools_by_name"] = sorted(kwargs["tools_by_name"])
         captured["llm_type"] = type(kwargs["llm"]).__name__
         captured["llm_with_tools_type"] = type(kwargs["llm_with_tools"]).__name__
+        captured["checkpointer"] = kwargs["checkpointer"]
         return FakeGraph()
 
     monkeypatch.setattr(WingAgent, "_build_llm", lambda self: FakeLLM())
@@ -101,6 +105,8 @@ def test_wing_agent_route_invokes_with_runtime_context(monkeypatch):
     captured = patch_agent_graph(monkeypatch)
     app = FastAPI()
     app.state.settings = make_settings()
+    checkpointer = InMemorySaver()
+    app.dependency_overrides[get_wing_checkpointer] = lambda: checkpointer
     app.include_router(wing.router, prefix="/agents/wing")
     client = TestClient(app)
 
@@ -119,19 +125,58 @@ def test_wing_agent_route_invokes_with_runtime_context(monkeypatch):
     assert body["applied_filters"] is None
     assert body["error"] is None
     assert body["turn_id"] == captured["state"]["current_turn"]["turn_id"]
-    assert set(body) == {"turn_id", "answer", "results", "applied_filters", "error"}
+    assert UUID(body["thread_id"])
+    assert set(body) == {
+        "thread_id",
+        "turn_id",
+        "answer",
+        "results",
+        "applied_filters",
+        "error",
+    }
     assert set(captured["state"]) == {"current_turn_id", "messages", "current_turn"}
     assert captured["state"]["current_turn"]["user_input"] == "hello"
     assert captured["context"]["agent_profile"] == "imports"
     assert captured["context"]["additional_prompt"] == "Prefer concise answers."
     assert captured["llm_type"] == "FakeLLM"
     assert captured["llm_with_tools_type"] == "FakeLLM"
+    assert captured["checkpointer"] is checkpointer
+
+
+def test_wing_agent_route_continues_requested_thread(monkeypatch):
+    captured = patch_agent_graph(monkeypatch)
+    app = FastAPI()
+    app.state.settings = make_settings()
+    checkpointer = InMemorySaver()
+    app.state.wing_checkpointer = checkpointer
+
+    @app.middleware("http")
+    async def add_authenticated_user(request, call_next):
+        request.state.user_uuid = "user-123"
+        return await call_next(request)
+
+    app.include_router(wing.router, prefix="/agents/wing")
+    client = TestClient(app)
+    thread_id = uuid4()
+
+    response = client.post(
+        "/agents/wing/invoke",
+        json={"message": "hello again", "thread_id": str(thread_id)},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["thread_id"] == str(thread_id)
+    assert captured["checkpointer"] is checkpointer
+    assert captured["config"]["configurable"]["thread_id"] == (
+        f"user-123:imports:{thread_id}"
+    )
 
 
 def test_wing_agent_route_uses_explicit_insights_profile(monkeypatch):
     captured = patch_agent_graph(monkeypatch)
     app = FastAPI()
     app.state.settings = make_settings()
+    app.state.wing_checkpointer = InMemorySaver()
     app.include_router(wing.router, prefix="/agents/wing")
     client = TestClient(app)
 
@@ -220,6 +265,7 @@ def test_wing_agent_route_returns_sanitized_current_turn_results(monkeypatch):
 
     app = FastAPI()
     app.state.settings = make_settings()
+    app.state.wing_checkpointer = InMemorySaver()
     app.include_router(wing.router, prefix="/agents/wing")
     client = TestClient(app)
 
@@ -234,6 +280,7 @@ def test_wing_agent_route_returns_sanitized_current_turn_results(monkeypatch):
     assert response.status_code == 200
     body = response.json()
     assert body == {
+        "thread_id": body["thread_id"],
         "turn_id": body["turn_id"],
         "answer": "Here is your category breakdown.",
         "results": [
@@ -275,6 +322,19 @@ def test_wing_agent_builds_initial_state_without_runtime_fields(monkeypatch):
     assert state["current_turn"]["user_input"] == "hello"
     assert state["current_turn"]["turn_id"]
     assert isinstance(state["messages"][0], HumanMessage)
+
+
+def test_wing_agent_configures_in_memory_checkpoints_per_run(monkeypatch):
+    captured = patch_agent_graph(monkeypatch)
+    agent = WingAgent(settings=make_settings())
+
+    asyncio.run(agent.ainvoke("hello"))
+
+    assert isinstance(agent.checkpointer, InMemorySaver)
+    assert captured["checkpointer"] is agent.checkpointer
+    assert captured["config"]["configurable"]["thread_id"] == captured["context"][
+        "agent_run_id"
+    ]
 
 
 def test_wing_agent_builds_runtime_context(monkeypatch):

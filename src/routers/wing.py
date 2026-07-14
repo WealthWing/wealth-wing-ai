@@ -1,12 +1,20 @@
 from __future__ import annotations
 import logging
-from typing import Any
+from typing import Annotated, Any
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Depends, Request
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from src.agents.wing.agent import WingAgent
 from src.agents.wing.state import CurrentTurn, ResolvedFilters
-from src.config import get_settings
+from src.config import Settings
+from src.dependencies import (
+    get_app_settings,
+    get_wing_checkpointer,
+    get_ww_data_client,
+)
+from src.providers.ww_data_client import WWDataClient
 from src.schemas.wing import (
     WingAgentError,
     WingAgentRequest,
@@ -21,19 +29,27 @@ router = APIRouter()
 async def invoke_wing_agent(
     payload: WingAgentRequest,
     request: Request,
+    settings: Annotated[Settings, Depends(get_app_settings)],
+    ww_data_client: Annotated[WWDataClient | None, Depends(get_ww_data_client)],
+    checkpointer: Annotated[
+        BaseCheckpointSaver[Any],
+        Depends(get_wing_checkpointer),
+    ],
 ) -> WingAgentResponse:
-    settings = getattr(request.app.state, "settings", None) or get_settings()
+    thread_id = payload.thread_id or uuid4()
     agent = WingAgent(
         settings=settings,
         request=payload,
-        ww_data_client=getattr(request.app.state, "ww_data_client", None),
+        ww_data_client=ww_data_client,
         access_token=getattr(request.state, "access_token", None),
         request_id=getattr(request.state, "request_id", None),
+        checkpointer=checkpointer,
+        thread_id=_checkpoint_thread_id(request, thread_id, payload.agent_profile),
     )
 
     state = await agent.ainvoke(payload.message)
     current_turn = state.get("current_turn", {})
-    response = _response_from_current_turn(current_turn)
+    response = _response_from_current_turn(current_turn, thread_id)
     logger.info(
         "wing_agent_invoked",
         extra={
@@ -46,7 +62,10 @@ async def invoke_wing_agent(
     return response
 
 
-def _response_from_current_turn(current_turn: CurrentTurn) -> WingAgentResponse:
+def _response_from_current_turn(
+    current_turn: CurrentTurn,
+    thread_id: UUID,
+) -> WingAgentResponse:
     turn_id = current_turn.get("turn_id")
     if not isinstance(turn_id, str) or not turn_id:
         turn_id = "unknown"
@@ -57,6 +76,7 @@ def _response_from_current_turn(current_turn: CurrentTurn) -> WingAgentResponse:
         answer = error.message if error else "I could not complete that request."
 
     return WingAgentResponse(
+        thread_id=thread_id,
         turn_id=turn_id,
         answer=answer,
         results=[
@@ -67,6 +87,15 @@ def _response_from_current_turn(current_turn: CurrentTurn) -> WingAgentResponse:
         applied_filters=_serialize_filters(current_turn.get("filters")),
         error=error,
     )
+
+
+def _checkpoint_thread_id(
+    request: Request,
+    thread_id: UUID,
+    agent_profile: str,
+) -> str:
+    user_id = getattr(request.state, "user_uuid", "unauthenticated")
+    return f"{user_id}:{agent_profile}:{thread_id}"
 
 
 def _public_error(current_turn: CurrentTurn) -> WingAgentError | None:

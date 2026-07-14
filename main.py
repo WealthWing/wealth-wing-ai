@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI
+from langgraph.checkpoint.memory import InMemorySaver
 
 from typing import Optional
 
@@ -61,6 +62,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.settings = settings
+    app.state.wing_checkpointer = InMemorySaver()
 
     app.include_router(health_check.router, prefix="/health", tags=["health"])
     app.include_router(wing.router, prefix="/agents/wing", tags=["agents"])

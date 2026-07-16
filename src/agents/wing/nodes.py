@@ -394,7 +394,7 @@ Rules:
                 if tool_errors
                 else "I do not have data available for that request."
             )
-
+            
             logger.warning(
                 "wing_final_answer_without_results",
                 extra={

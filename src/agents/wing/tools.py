@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Annotated, Any
-from datetime import datetime, timezone
+from typing import Annotated, Any, Literal
+from datetime import date, datetime, timedelta, timezone
+from uuid import UUID
 from langchain_core.tools import BaseTool, ToolException, tool
 from langgraph.prebuilt import InjectedState, ToolRuntime
 from pydantic import BaseModel, Field, ValidationError
@@ -12,7 +13,12 @@ from src.providers.ww_data_client import (
     WWDataClientError,
     WWDataUnavailableError,
 )
-from src.providers.ww_data_schemas import TransactionResponse, TransactionsQueryParams
+from src.providers.ww_data_schemas import (
+    CashFlowHistoryRequest,
+    CategorySpendingParams,
+    TransactionResponse,
+    TransactionsQueryParams,
+)
 from src.utils.format import format_cents
 
 if __package__ in {None, ""}:
@@ -268,35 +274,57 @@ class TransactionsByCategory(BaseModel):
     )
 
 
-# Use for charts and category-level explanations
 @tool
-def get_spending_by_category(
-    state: Annotated[WingGraphState, InjectedState()],
+async def get_spending_by_category(
     text: str,
+    runtime: ToolRuntime[WingRuntimeContext, WingGraphState],
 ) -> ToolResultPayload:
     """Return expense totals grouped by category for the resolved date range."""
-    #“Where did I spend money last month?”
-    #“Show my spending by category.”
-    #“What were my biggest expenses in June?”
+    del text
+    filters = runtime.state.get("current_turn", {}).get("filters", {})
+    try:
+        resolved_filters = _coerce_resolved_filters(filters)
+        params = CategorySpendingParams(
+            from_date=resolved_filters.params.from_date,
+            to_date=resolved_filters.params.to_date,
+        )
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise ToolException("Spending request filters are invalid.") from exc
+
+    ww_data_client = runtime.context.get("ww_data_client")
+    access_token = runtime.context.get("access_token")
+    if ww_data_client is None:
+        raise ToolException("Spending data service is not configured.")
+    if not access_token:
+        raise ToolException("Spending data authorization is unavailable.")
+
+    try:
+        categories = await ww_data_client.get_spending_by_category(
+            access_token=access_token,
+            params=params,
+        )
+    except WWDataAuthorizationError as exc:
+        raise ToolException("Spending data authorization failed.") from exc
+    except WWDataUnavailableError as exc:
+        raise ToolException("Spending data service is unavailable.") from exc
+    except WWDataClientError as exc:
+        raise ToolException("Spending data could not be retrieved.") from exc
+
     return _tool_result(
         result_type="spending_by_category",
         data={
-            "total_spent": format_cents(184500),
             "categories": [
                 {
-                    "category_id": "uuid",
-                    "category_slug": "groceries",
-                    "category_name": "Groceries",
-                    "total_cents": 45200,
-                    "transaction_count": 18,
-                    "percent_of_total": 24.5,
+                    "category_id": str(category.category_id),
+                    "category": category.category,
+                    "expense": category.expense,
                 }
+                for category in categories
             ],
         },
         metadata={
-            "from_date": "2026-06-01",
-            "to_date": "2026-06-30",
-            "transaction_types": ["expense"], #default to expense
+            "filters": params.model_dump(mode="json", exclude_none=True),
+            "source": "wealth-wing-data",
         },
         ui="spending_by_category",
     )
@@ -401,6 +429,83 @@ async def get_transactions(
 
 
 @tool
+async def get_cash_flow_history(
+    text: str,
+    runtime: ToolRuntime[WingRuntimeContext, WingGraphState],
+    granularity: Literal["day", "week", "month"] = "month",
+    category_ids: list[UUID] | None = None,
+    account_ids: list[UUID] | None = None,
+    project_ids: list[UUID] | None = None,
+) -> ToolResultPayload:
+    """Return income, expenses, refunds, and net cash flow for a date range.
+
+    Use granularity day, week, or month. UUID filters may only be supplied when
+    they are known; do not infer IDs from category, account, or project names.
+    """
+    del text
+    filters = runtime.state.get("current_turn", {}).get("filters", {})
+    try:
+        resolved_filters = _coerce_resolved_filters(filters)
+        from_date, to_date = _cash_flow_date_range(resolved_filters)
+        request = CashFlowHistoryRequest(
+            from_date=from_date,
+            to_date=to_date,
+            category_ids=category_ids,
+            account_ids=account_ids,
+            project_ids=project_ids,
+            granularity=granularity,
+        )
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise ToolException("Cash-flow request filters are invalid.") from exc
+
+    ww_data_client = runtime.context.get("ww_data_client")
+    access_token = runtime.context.get("access_token")
+    if ww_data_client is None:
+        raise ToolException("Cash-flow data service is not configured.")
+    if not access_token:
+        raise ToolException("Cash-flow data authorization is unavailable.")
+
+    try:
+        response = await ww_data_client.get_cash_flow_history(
+            access_token=access_token,
+            request=request,
+        )
+    except WWDataAuthorizationError as exc:
+        raise ToolException("Cash-flow data authorization failed.") from exc
+    except WWDataUnavailableError as exc:
+        raise ToolException("Cash-flow data service is unavailable.") from exc
+    except WWDataClientError as exc:
+        raise ToolException("Cash-flow data could not be retrieved.") from exc
+
+    return _tool_result(
+        result_type="cash_flow_history",
+        data={
+            "timezone": response.timezone,
+            "from_date": response.from_date.isoformat(),
+            "to_date": response.to_date.isoformat(),
+            "granularity": response.granularity,
+            "periods": [
+                {
+                    "period_start": period.period_start.isoformat(),
+                    "period_end": period.period_end.isoformat(),
+                    "income": period.income,
+                    "expense": period.expense,
+                    "refunds": period.refunds,
+                    "net": period.net,
+                    "transaction_count": period.transaction_count,
+                }
+                for period in response.periods
+            ],
+        },
+        metadata={
+            "filters": _serialize_tool_metadata(resolved_filters),
+            "source": "wealth-wing-data",
+        },
+        ui="cash_flow_history",
+    )
+
+
+@tool
 def get_transactions_by_category(
     state: Annotated[WingGraphState, InjectedState()],
 ) -> ToolResultPayload:
@@ -484,6 +589,21 @@ def _coerce_resolved_filters(value: Any) -> ResolvedFilters:
     if isinstance(value, dict):
         return ResolvedFilters.model_validate(value)
     return ResolvedFilters()
+
+
+def _cash_flow_date_range(filters: ResolvedFilters) -> tuple[date, date]:
+    from_datetime = filters.params.from_date
+    to_datetime = filters.params.to_date
+    if from_datetime is not None and to_datetime is not None:
+        return from_datetime.date(), to_datetime.date()
+
+    if from_datetime is not None or to_datetime is not None:
+        raise ValueError("cash-flow queries require both from_date and to_date")
+
+    today = datetime.now(timezone.utc).date()
+    current_month_start = today.replace(day=1)
+    previous_month_end = current_month_start - timedelta(days=1)
+    return previous_month_end.replace(day=1), previous_month_end
 
 
 def _serialize_transaction(transaction: TransactionResponse) -> dict[str, Any]:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
+from uuid import UUID
 
 import pytest
 from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
@@ -18,8 +19,21 @@ from src.agents.wing.state import (
     StandardParams,
     WingRuntimeContext,
 )
-from src.agents.wing.tools import get_transactions
-from src.providers.ww_data_schemas import TransactionsAllResponse
+from src.agents.wing.tools import (
+    get_cash_flow_history,
+    get_spending_by_category,
+    get_transactions,
+)
+from src.providers.ww_data_client import (
+    WWDataAuthorizationError,
+    WWDataResponseError,
+    WWDataUnavailableError,
+)
+from src.providers.ww_data_schemas import (
+    CashFlowHistoryResponse,
+    CategorySpendingResponse,
+    TransactionsAllResponse,
+)
 
 
 class FakeWWDataClient:
@@ -50,6 +64,30 @@ def _invoke(runtime: FakeToolRuntime) -> dict[str, Any]:
     )
 
 
+def _invoke_cash_flow(
+    runtime: FakeToolRuntime,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    assert get_cash_flow_history.coroutine is not None
+    return asyncio.run(
+        get_cash_flow_history.coroutine(
+            text="show cash flow",
+            runtime=runtime,
+            **kwargs,
+        )
+    )
+
+
+def _invoke_spending_by_category(runtime: FakeToolRuntime) -> dict[str, Any]:
+    assert get_spending_by_category.coroutine is not None
+    return asyncio.run(
+        get_spending_by_category.coroutine(
+            text="show spending by category",
+            runtime=runtime,
+        )
+    )
+
+
 def _provider_response() -> TransactionsAllResponse:
     return TransactionsAllResponse.model_validate(
         {
@@ -75,6 +113,28 @@ def _provider_response() -> TransactionsAllResponse:
             "has_more": True,
             "total_pages": 3,
             "total_count": 41,
+        }
+    )
+
+
+def _cash_flow_response() -> CashFlowHistoryResponse:
+    return CashFlowHistoryResponse.model_validate(
+        {
+            "timezone": "America/New_York",
+            "from_date": "2026-06-01",
+            "to_date": "2026-06-30",
+            "granularity": "month",
+            "periods": [
+                {
+                    "period_start": "2026-06-01T00:00:00-04:00",
+                    "period_end": "2026-06-30T23:59:59.999999-04:00",
+                    "income": 520000,
+                    "expense": -184500,
+                    "refunds": 2500,
+                    "net": 338000,
+                    "transaction_count": 73,
+                }
+            ],
         }
     )
 
@@ -217,3 +277,273 @@ def test_get_transactions_requires_runtime_dependencies(context: dict[str, Any])
 
     with pytest.raises(ToolException):
         _invoke(runtime)
+
+
+class FakeCategorySpendingWWDataClient:
+    def __init__(
+        self,
+        response: list[CategorySpendingResponse] | Exception,
+    ) -> None:
+        self.response = response
+        self.calls: list[dict[str, Any]] = []
+
+    async def get_spending_by_category(
+        self,
+        **kwargs: Any,
+    ) -> list[CategorySpendingResponse]:
+        self.calls.append(kwargs)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+def _category_spending_response() -> list[CategorySpendingResponse]:
+    return [
+        CategorySpendingResponse.model_validate(
+            {
+                "category_id": "43581d15-1a1d-49ce-adc6-f0fe6184f18a",
+                "category": "Groceries",
+                "expense": -8423,
+            }
+        )
+    ]
+
+
+def test_get_spending_by_category_forwards_dates_and_returns_safe_payload() -> None:
+    client = FakeCategorySpendingWWDataClient(_category_spending_response())
+    runtime = FakeToolRuntime(
+        state={
+            "current_turn": {
+                "filters": ResolvedFilters(
+                    params=StandardParams(
+                        from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                        to_date=datetime(2026, 6, 30, tzinfo=timezone.utc),
+                    ),
+                    date_source="explicit",
+                )
+            }
+        },
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    result = _invoke_spending_by_category(runtime)
+
+    params = client.calls[0]["params"]
+    assert params.model_dump() == {
+        "from_date": datetime(2026, 6, 1, tzinfo=timezone.utc),
+        "to_date": datetime(2026, 6, 30, tzinfo=timezone.utc),
+    }
+    assert client.calls[0]["access_token"] == "secret-token"
+    assert result == {
+        "result_type": "spending_by_category",
+        "data": {
+            "categories": [
+                {
+                    "category_id": "43581d15-1a1d-49ce-adc6-f0fe6184f18a",
+                    "category": "Groceries",
+                    "expense": -8423,
+                }
+            ]
+        },
+        "metadata": {
+            "filters": {
+                "from_date": "2026-06-01T00:00:00Z",
+                "to_date": "2026-06-30T00:00:00Z",
+            },
+            "source": "wealth-wing-data",
+        },
+        "ui": "spending_by_category",
+    }
+    assert "secret-token" not in str(result)
+
+
+def test_get_spending_by_category_forwards_no_dates() -> None:
+    client = FakeCategorySpendingWWDataClient([])
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": ResolvedFilters()}},
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    result = _invoke_spending_by_category(runtime)
+
+    assert client.calls[0]["params"].model_dump(exclude_none=True) == {}
+    assert result["data"] == {"categories": []}
+
+
+def test_get_spending_by_category_rejects_invalid_filters_without_provider_call() -> None:
+    client = FakeCategorySpendingWWDataClient(_category_spending_response())
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": {"params": {"from_date": "invalid"}}}},
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    with pytest.raises(ToolException, match="filters are invalid"):
+        _invoke_spending_by_category(runtime)
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "context",
+    [{}, {"ww_data_client": FakeCategorySpendingWWDataClient([])}],
+)
+def test_get_spending_by_category_requires_runtime_dependencies(
+    context: dict[str, Any],
+) -> None:
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": ResolvedFilters()}},
+        context=context,
+    )
+
+    with pytest.raises(ToolException):
+        _invoke_spending_by_category(runtime)
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "message"),
+    [
+        (WWDataAuthorizationError(), "authorization failed"),
+        (WWDataUnavailableError(), "service is unavailable"),
+        (WWDataResponseError(), "could not be retrieved"),
+    ],
+)
+def test_get_spending_by_category_maps_provider_errors(
+    provider_error: Exception,
+    message: str,
+) -> None:
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": ResolvedFilters()}},
+        context={
+            "ww_data_client": FakeCategorySpendingWWDataClient(provider_error),
+            "access_token": "secret-token",
+        },
+    )
+
+    with pytest.raises(ToolException, match=message):
+        _invoke_spending_by_category(runtime)
+
+
+class FakeCashFlowWWDataClient:
+    def __init__(self, response: CashFlowHistoryResponse | Exception) -> None:
+        self.response = response
+        self.calls: list[dict[str, Any]] = []
+
+    async def get_cash_flow_history(self, **kwargs: Any) -> CashFlowHistoryResponse:
+        self.calls.append(kwargs)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+def test_get_cash_flow_history_returns_stable_payload_and_forwards_inputs() -> None:
+    client = FakeCashFlowWWDataClient(_cash_flow_response())
+    runtime = FakeToolRuntime(
+        state={
+            "current_turn": {
+                "filters": ResolvedFilters(
+                    params=StandardParams(
+                        from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                        to_date=datetime(2026, 6, 30, tzinfo=timezone.utc),
+                    ),
+                    date_source="explicit",
+                )
+            }
+        },
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    result = _invoke_cash_flow(
+        runtime,
+        granularity="week",
+        category_ids=["43581d15-1a1d-49ce-adc6-f0fe6184f18a"],
+        account_ids=["f219bb47-8f12-455e-b575-e384ac524999"],
+    )
+
+    request = client.calls[0]["request"]
+    assert request.model_dump() == {
+        "from_date": date(2026, 6, 1),
+        "to_date": date(2026, 6, 30),
+        "category_ids": [UUID("43581d15-1a1d-49ce-adc6-f0fe6184f18a")],
+        "account_ids": [UUID("f219bb47-8f12-455e-b575-e384ac524999")],
+        "project_ids": None,
+        "granularity": "week",
+    }
+    assert client.calls[0]["access_token"] == "secret-token"
+    assert result["data"] == {
+        "timezone": "America/New_York",
+        "from_date": "2026-06-01",
+        "to_date": "2026-06-30",
+        "granularity": "month",
+        "periods": [
+            {
+                "period_start": "2026-06-01T00:00:00-04:00",
+                "period_end": "2026-06-30T23:59:59.999999-04:00",
+                "income": 520000,
+                "expense": -184500,
+                "refunds": 2500,
+                "net": 338000,
+                "transaction_count": 73,
+            }
+        ],
+    }
+    assert result["metadata"]["source"] == "wealth-wing-data"
+    assert "secret-token" not in str(result)
+
+
+def test_get_cash_flow_history_rejects_partial_date_range() -> None:
+    client = FakeCashFlowWWDataClient(_cash_flow_response())
+    runtime = FakeToolRuntime(
+        state={
+            "current_turn": {
+                "filters": ResolvedFilters(
+                    params=StandardParams(
+                        from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                    )
+                )
+            }
+        },
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    with pytest.raises(ToolException, match="filters are invalid"):
+        _invoke_cash_flow(runtime)
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "message"),
+    [
+        (WWDataAuthorizationError(), "authorization failed"),
+        (WWDataUnavailableError(), "service is unavailable"),
+        (WWDataResponseError(), "could not be retrieved"),
+    ],
+)
+def test_get_cash_flow_history_maps_provider_errors(
+    provider_error: Exception,
+    message: str,
+) -> None:
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": ResolvedFilters()}},
+        context={
+            "ww_data_client": FakeCashFlowWWDataClient(provider_error),
+            "access_token": "secret-token",
+        },
+    )
+
+    with pytest.raises(ToolException, match=message):
+        _invoke_cash_flow(runtime)
+
+
+@pytest.mark.parametrize(
+    "context",
+    [{}, {"ww_data_client": FakeCashFlowWWDataClient(_cash_flow_response())}],
+)
+def test_get_cash_flow_history_requires_runtime_dependencies(
+    context: dict[str, Any],
+) -> None:
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": ResolvedFilters()}},
+        context=context,
+    )
+
+    with pytest.raises(ToolException):
+        _invoke_cash_flow(runtime)

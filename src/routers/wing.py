@@ -129,6 +129,7 @@ def _serialize_result(result: Any) -> WingAgentResult | None:
     result_id = result.get("result_id")
     data = result.get("data")
     if not isinstance(result_id, str) or result_type not in {
+        "cash_flow_history",
         "spending_by_category",
         "transaction_summary",
         "transaction_list",
@@ -153,17 +154,43 @@ def _public_result_data(
     result_type: str,
     data: Any,
 ) -> dict[str, Any] | list[dict[str, Any]] | None:
+    if result_type == "cash_flow_history" and isinstance(data, dict):
+        periods = data.get("periods", [])
+        if not isinstance(periods, list):
+            return None
+
+        return {
+            **_select_fields(
+                data,
+                "timezone",
+                "from_date",
+                "to_date",
+                "granularity",
+            ),
+            "periods": [
+                _select_fields(
+                    period,
+                    "period_start",
+                    "period_end",
+                    "income",
+                    "expense",
+                    "refunds",
+                    "net",
+                    "transaction_count",
+                )
+                for period in periods
+                if isinstance(period, dict)
+            ],
+        }
+
     if result_type == "spending_by_category" and isinstance(data, dict):
         return {
-            "total_spent": data.get("total_spent"),
             "categories": [
                 _select_fields(
                     category,
-                    "category_slug",
-                    "category_name",
-                    "total_cents",
-                    "transaction_count",
-                    "percent_of_total",
+                    "category_id",
+                    "category",
+                    "expense",
                 )
                 for category in data.get("categories", [])
                 if isinstance(category, dict)

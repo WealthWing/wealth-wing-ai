@@ -19,6 +19,7 @@ class WingAgentRequest(BaseModel):
 
 
 AgentResultType = Literal[
+    "cash_flow_history",
     "spending_by_category",
     "transaction_summary",
     "transaction_list",

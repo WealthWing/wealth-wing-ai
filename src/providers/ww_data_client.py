@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import httpx
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from src.providers.ww_data_schemas import (
+    CashFlowHistoryRequest,
+    CashFlowHistoryResponse,
+    CategorySpendingParams,
+    CategorySpendingResponse,
     TransactionsAllResponse,
     TransactionsQueryParams,
 )
@@ -67,5 +71,79 @@ class WWDataClient:
 
         try:
             return TransactionsAllResponse.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise WWDataResponseError("ww-data returned invalid JSON") from exc
+
+    async def get_spending_by_category(
+        self,
+        *,
+        access_token: str,
+        params: CategorySpendingParams,
+    ) -> list[CategorySpendingResponse]:
+        payload = params.model_dump(mode="json", exclude_none=True)
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        try:
+            response = await self._http_client.post(
+                f"{self._base_url}/spending_by_category",
+                json=payload,
+                headers=headers,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                raise WWDataAuthorizationError(
+                    "ww-data authorization failed"
+                ) from exc
+
+            raise WWDataResponseError("ww-data returned an error response") from exc
+        except (
+            httpx.TimeoutException,
+            httpx.ConnectError,
+            httpx.NetworkError,
+            httpx.RequestError,
+        ) as exc:
+            raise WWDataUnavailableError("ww-data is unavailable") from exc
+
+        try:
+            return TypeAdapter(list[CategorySpendingResponse]).validate_python(
+                response.json()
+            )
+        except (ValueError, ValidationError) as exc:
+            raise WWDataResponseError("ww-data returned invalid JSON") from exc
+
+    async def get_cash_flow_history(
+        self,
+        *,
+        access_token: str,
+        request: CashFlowHistoryRequest,
+    ) -> CashFlowHistoryResponse:
+        query_params = request.model_dump(mode="json", exclude_none=True)
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        try:
+            response = await self._http_client.get(
+                f"{self._base_url}/transaction/cash-flow-history",
+                params=query_params,
+                headers=headers,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                raise WWDataAuthorizationError(
+                    "ww-data authorization failed"
+                ) from exc
+
+            raise WWDataResponseError("ww-data returned an error response") from exc
+        except (
+            httpx.TimeoutException,
+            httpx.ConnectError,
+            httpx.NetworkError,
+            httpx.RequestError,
+        ) as exc:
+            raise WWDataUnavailableError("ww-data is unavailable") from exc
+
+        try:
+            return CashFlowHistoryResponse.model_validate(response.json())
         except (ValueError, ValidationError) as exc:
             raise WWDataResponseError("ww-data returned invalid JSON") from exc

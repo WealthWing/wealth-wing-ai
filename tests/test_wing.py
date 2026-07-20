@@ -202,6 +202,17 @@ def test_wing_agent_route_uses_explicit_insights_profile(monkeypatch):
     assert captured["llm_with_tools_type"] == "FakeBoundLLM"
 
 
+def test_spending_by_category_tool_is_available_to_insights_only():
+    insights_tools = {tool.name for tool in get_profile("insights")["tools"]}
+
+    assert "get_spending_by_category" in insights_tools
+    assert all(
+        "get_spending_by_category"
+        not in {tool.name for tool in get_profile(profile)["tools"]}
+        for profile in ("imports", "planning")
+    )
+
+
 def test_wing_agent_route_returns_sanitized_current_turn_results(monkeypatch):
     class FakeGraph:
         async def ainvoke(self, state, context, config):
@@ -304,6 +315,171 @@ def test_wing_agent_route_returns_sanitized_current_turn_results(monkeypatch):
         "applied_filters": None,
         "error": None,
     }
+
+
+def test_wing_agent_route_returns_sanitized_cash_flow_results(monkeypatch):
+    class FakeGraph:
+        async def ainvoke(self, state, context, config):
+            return {
+                "current_turn": {
+                    **state["current_turn"],
+                    "final_answer": "Your June cash flow was positive.",
+                    "tool_results": [
+                        {
+                            "result_id": "call-1",
+                            "result_type": "cash_flow_history",
+                            "source_tool": "get_cash_flow_history",
+                            "metadata": {"source": "do not expose"},
+                            "ui": "cash_flow_history",
+                            "data": {
+                                "timezone": "America/New_York",
+                                "from_date": "2026-06-01",
+                                "to_date": "2026-06-30",
+                                "granularity": "month",
+                                "periods": [
+                                    {
+                                        "period_start": "2026-06-01T00:00:00-04:00",
+                                        "period_end": "2026-06-30T23:59:59.999999-04:00",
+                                        "income": 520000,
+                                        "expense": -184500,
+                                        "refunds": 2500,
+                                        "net": 338000,
+                                        "transaction_count": 73,
+                                        "provider_payload": "private",
+                                    }
+                                ],
+                                "provider_payload": "private",
+                            },
+                        }
+                    ],
+                }
+            }
+
+    class FakeLLM:
+        def bind_tools(self, tools):
+            return self
+
+    monkeypatch.setattr(WingAgent, "_build_llm", lambda self: FakeLLM())
+    monkeypatch.setattr(
+        "src.agents.wing.agent.build_graph",
+        lambda **kwargs: FakeGraph(),
+    )
+
+    app = FastAPI()
+    app.state.settings = make_settings()
+    app.state.wing_checkpointer = InMemorySaver()
+    app.include_router(wing.router, prefix="/agents/wing")
+    client = TestClient(app)
+
+    response = client.post(
+        "/agents/wing/invoke",
+        json={"message": "Show my June cash flow.", "profile": "insights"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == [
+        {
+            "id": "call-1",
+            "type": "cash_flow_history",
+            "ui": "cash_flow_history",
+            "data": {
+                "timezone": "America/New_York",
+                "from_date": "2026-06-01",
+                "to_date": "2026-06-30",
+                "granularity": "month",
+                "periods": [
+                    {
+                        "period_start": "2026-06-01T00:00:00-04:00",
+                        "period_end": "2026-06-30T23:59:59.999999-04:00",
+                        "income": 520000,
+                        "expense": -184500,
+                        "refunds": 2500,
+                        "net": 338000,
+                        "transaction_count": 73,
+                    }
+                ],
+            },
+        }
+    ]
+
+
+def test_wing_agent_route_returns_allowlisted_spending_by_category_results(
+    monkeypatch,
+):
+    class FakeGraph:
+        async def ainvoke(self, state, context, config):
+            return {
+                "current_turn": {
+                    **state["current_turn"],
+                    "final_answer": "Groceries were your largest expense.",
+                    "tool_results": [
+                        {
+                            "result_id": "call-1",
+                            "result_type": "spending_by_category",
+                            "source_tool": "get_spending_by_category",
+                            "metadata": {"source": "do not expose"},
+                            "ui": "spending_by_category",
+                            "data": {
+                                "categories": [
+                                    {
+                                        "category_id": "43581d15-1a1d-49ce-adc6-f0fe6184f18a",
+                                        "category": "Groceries",
+                                        "expense": -8423,
+                                        "total_spent": -8423,
+                                        "category_slug": "groceries",
+                                        "category_name": "Groceries",
+                                        "total_cents": -8423,
+                                        "transaction_count": 1,
+                                        "percent_of_total": 100,
+                                        "provider_payload": "private",
+                                    }
+                                ],
+                                "total_spent": -8423,
+                                "provider_payload": "private",
+                            },
+                        }
+                    ],
+                }
+            }
+
+    class FakeLLM:
+        def bind_tools(self, tools):
+            return self
+
+    monkeypatch.setattr(WingAgent, "_build_llm", lambda self: FakeLLM())
+    monkeypatch.setattr(
+        "src.agents.wing.agent.build_graph",
+        lambda **kwargs: FakeGraph(),
+    )
+
+    app = FastAPI()
+    app.state.settings = make_settings()
+    app.state.wing_checkpointer = InMemorySaver()
+    app.include_router(wing.router, prefix="/agents/wing")
+    client = TestClient(app)
+
+    response = client.post(
+        "/agents/wing/invoke",
+        json={"message": "Show my spending by category.", "profile": "insights"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == [
+        {
+            "id": "call-1",
+            "type": "spending_by_category",
+            "ui": "spending_by_category",
+            "data": {
+                "categories": [
+                    {
+                        "category_id": "43581d15-1a1d-49ce-adc6-f0fe6184f18a",
+                        "category": "Groceries",
+                        "expense": -8423,
+                    }
+                ]
+            },
+        }
+    ]
 
 
 def test_wing_agent_builds_initial_state_without_runtime_fields(monkeypatch):

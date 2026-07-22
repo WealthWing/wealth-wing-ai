@@ -8,6 +8,8 @@ from src.providers.ww_data_schemas import (
     CashFlowHistoryResponse,
     CategorySpendingParams,
     CategorySpendingResponse,
+    TransactionSummaryRequest,
+    TransactionSummaryResponse,
     TransactionsAllResponse,
     TransactionsQueryParams,
 )
@@ -145,5 +147,42 @@ class WWDataClient:
 
         try:
             return CashFlowHistoryResponse.model_validate(response.json())
+        except (ValueError, ValidationError) as exc:
+            raise WWDataResponseError("ww-data returned invalid JSON") from exc
+
+    async def get_transaction_summary(
+        self,
+        *,
+        access_token: str,
+        request: TransactionSummaryRequest,
+    ) -> TransactionSummaryResponse:
+        """Return an organization-scoped transaction summary for a date range."""
+        query_params = request.model_dump(mode="json")
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        try:
+            response = await self._http_client.get(
+                f"{self._base_url}/transaction/summary",
+                params=query_params,
+                headers=headers,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (401, 403):
+                raise WWDataAuthorizationError(
+                    "ww-data authorization failed"
+                ) from exc
+
+            raise WWDataResponseError("ww-data returned an error response") from exc
+        except (
+            httpx.TimeoutException,
+            httpx.ConnectError,
+            httpx.NetworkError,
+            httpx.RequestError,
+        ) as exc:
+            raise WWDataUnavailableError("ww-data is unavailable") from exc
+
+        try:
+            return TransactionSummaryResponse.model_validate(response.json())
         except (ValueError, ValidationError) as exc:
             raise WWDataResponseError("ww-data returned invalid JSON") from exc

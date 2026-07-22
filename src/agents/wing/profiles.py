@@ -5,7 +5,6 @@ from src.agents.wing.tools import (
     get_cash_flow_history,
     get_spending_by_category,
     get_transactions,
-    get_transactions_by_category,
     get_transactions_summary,
 )
 
@@ -32,7 +31,6 @@ PROFILES: dict[ProfileId, WingAgentProfile] = {
         "tools": (
             get_spending_by_category,
             get_transactions_summary,
-            get_transactions_by_category,
             get_transactions,
             get_cash_flow_history,
         ),

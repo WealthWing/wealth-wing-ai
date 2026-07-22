@@ -200,11 +200,19 @@ def _public_result_data(
     if result_type == "transaction_summary" and isinstance(data, dict):
         return _select_fields(
             data,
-            "income_cents",
-            "expense_cents",
-            "net_cents",
-            "transaction_count",
-            "average_monthly_expense_cents",
+            "gross_expense",
+            "refunds",
+            "net_spending",
+            "income",
+            "net_activity",
+            "expense_transaction_count",
+            "refund_transaction_count",
+            "income_transaction_count",
+            "average_expense",
+            "average_monthly_spending",
+            "from_date",
+            "to_date",
+            "included_account_types",
         )
 
     if result_type == "transaction_list" and isinstance(data, dict):

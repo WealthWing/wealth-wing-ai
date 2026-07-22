@@ -23,6 +23,7 @@ from src.agents.wing.tools import (
     get_cash_flow_history,
     get_spending_by_category,
     get_transactions,
+    get_transactions_summary,
 )
 from src.providers.ww_data_client import (
     WWDataAuthorizationError,
@@ -32,6 +33,7 @@ from src.providers.ww_data_client import (
 from src.providers.ww_data_schemas import (
     CashFlowHistoryResponse,
     CategorySpendingResponse,
+    TransactionSummaryResponse,
     TransactionsAllResponse,
 )
 
@@ -88,6 +90,16 @@ def _invoke_spending_by_category(runtime: FakeToolRuntime) -> dict[str, Any]:
     )
 
 
+def _invoke_transaction_summary(runtime: FakeToolRuntime) -> dict[str, Any]:
+    assert get_transactions_summary.coroutine is not None
+    return asyncio.run(
+        get_transactions_summary.coroutine(
+            text="summarize my transactions",
+            runtime=runtime,
+        )
+    )
+
+
 def _provider_response() -> TransactionsAllResponse:
     return TransactionsAllResponse.model_validate(
         {
@@ -137,6 +149,232 @@ def _cash_flow_response() -> CashFlowHistoryResponse:
             ],
         }
     )
+
+
+def _transaction_summary_response() -> TransactionSummaryResponse:
+    return TransactionSummaryResponse.model_validate(
+        {
+            "gross_expense": 184500,
+            "refunds": 2500,
+            "net_spending": 182000,
+            "income": 520000,
+            "net_activity": 338000,
+            "expense_transaction_count": 68,
+            "refund_transaction_count": 2,
+            "income_transaction_count": 3,
+            "average_expense": 2713.24,
+            "average_monthly_spending": 182000.0,
+            "from_date": "2026-06-01",
+            "to_date": "2026-06-30",
+            "included_account_types": ["CHECKING", "CREDIT_CARD"],
+        }
+    )
+
+
+class FakeTransactionSummaryWWDataClient:
+    def __init__(self, response: TransactionSummaryResponse | Exception) -> None:
+        self.response = response
+        self.calls: list[dict[str, Any]] = []
+
+    async def get_transaction_summary(
+        self,
+        **kwargs: Any,
+    ) -> TransactionSummaryResponse:
+        self.calls.append(kwargs)
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
+def test_get_transactions_summary_returns_stable_payload_and_forwards_dates() -> None:
+    client = FakeTransactionSummaryWWDataClient(_transaction_summary_response())
+    filters = ResolvedFilters(
+        params=StandardParams(
+            from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
+            to_date=datetime(2026, 6, 30, tzinfo=timezone.utc),
+        ),
+        date_source="explicit",
+    )
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": filters}},
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    result = _invoke_transaction_summary(runtime)
+
+    assert client.calls[0]["access_token"] == "secret-token"
+    assert client.calls[0]["request"].model_dump(mode="json") == {
+        "from_date": "2026-06-01",
+        "to_date": "2026-06-30",
+        "account_types": ["CHECKING", "CREDIT_CARD"],
+    }
+    assert result == {
+        "result_type": "transaction_summary",
+        "data": {
+            "gross_expense": 184500,
+            "refunds": 2500,
+            "net_spending": 182000,
+            "income": 520000,
+            "net_activity": 338000,
+            "expense_transaction_count": 68,
+            "refund_transaction_count": 2,
+            "income_transaction_count": 3,
+            "average_expense": 2713.24,
+            "average_monthly_spending": 182000.0,
+            "from_date": "2026-06-01",
+            "to_date": "2026-06-30",
+            "included_account_types": ["CHECKING", "CREDIT_CARD"],
+        },
+        "metadata": {
+            "filters": filters.model_dump(mode="json"),
+            "source": "wealth-wing-data",
+        },
+        "ui": "transactions_summary_ui",
+    }
+    assert "secret-token" not in str(result)
+
+
+def test_get_transactions_summary_defaults_to_last_completed_month(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz: timezone | None = None) -> FrozenDateTime:
+            return cls(2026, 7, 22, tzinfo=tz)
+
+    monkeypatch.setattr("src.agents.wing.tools.datetime", FrozenDateTime)
+    client = FakeTransactionSummaryWWDataClient(_transaction_summary_response())
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": ResolvedFilters()}},
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    _invoke_transaction_summary(runtime)
+
+    request = client.calls[0]["request"]
+    assert request.from_date == date(2026, 6, 1)
+    assert request.to_date == date(2026, 6, 30)
+
+
+def test_get_transactions_summary_preserves_zero_activity() -> None:
+    response = _transaction_summary_response().model_copy(
+        update={
+            "gross_expense": 0,
+            "refunds": 0,
+            "net_spending": 0,
+            "income": 0,
+            "net_activity": 0,
+            "expense_transaction_count": 0,
+            "refund_transaction_count": 0,
+            "income_transaction_count": 0,
+            "average_expense": 0.0,
+            "average_monthly_spending": 0.0,
+        }
+    )
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": ResolvedFilters()}},
+        context={
+            "ww_data_client": FakeTransactionSummaryWWDataClient(response),
+            "access_token": "secret-token",
+        },
+    )
+
+    result = _invoke_transaction_summary(runtime)
+
+    assert result["data"]["net_activity"] == 0
+    assert result["data"]["expense_transaction_count"] == 0
+
+
+def test_get_transactions_summary_rejects_partial_date_range() -> None:
+    client = FakeTransactionSummaryWWDataClient(_transaction_summary_response())
+    runtime = FakeToolRuntime(
+        state={
+            "current_turn": {
+                "filters": ResolvedFilters(
+                    params=StandardParams(
+                        from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
+                    )
+                )
+            }
+        },
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    with pytest.raises(ToolException, match="filters are invalid"):
+        _invoke_transaction_summary(runtime)
+    assert client.calls == []
+
+
+def test_get_transactions_summary_rejects_unsupported_filters() -> None:
+    client = FakeTransactionSummaryWWDataClient(_transaction_summary_response())
+    runtime = FakeToolRuntime(
+        state={
+            "current_turn": {
+                "filters": ResolvedFilters(
+                    params=StandardParams(
+                        filter_by=[
+                            FilterByInputs(
+                                field_name="category",
+                                values=["Groceries"],
+                            )
+                        ]
+                    )
+                )
+            }
+        },
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    with pytest.raises(ToolException, match="not supported"):
+        _invoke_transaction_summary(runtime)
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        {},
+        {
+            "ww_data_client": FakeTransactionSummaryWWDataClient(
+                _transaction_summary_response()
+            )
+        },
+    ],
+)
+def test_get_transactions_summary_requires_runtime_dependencies(
+    context: dict[str, Any],
+) -> None:
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": ResolvedFilters()}},
+        context=context,
+    )
+
+    with pytest.raises(ToolException):
+        _invoke_transaction_summary(runtime)
+
+
+@pytest.mark.parametrize(
+    ("provider_error", "message"),
+    [
+        (WWDataAuthorizationError(), "authorization failed"),
+        (WWDataUnavailableError(), "service is unavailable"),
+        (WWDataResponseError(), "could not be retrieved"),
+    ],
+)
+def test_get_transactions_summary_maps_provider_errors(
+    provider_error: Exception,
+    message: str,
+) -> None:
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": ResolvedFilters()}},
+        context={
+            "ww_data_client": FakeTransactionSummaryWWDataClient(provider_error),
+            "access_token": "secret-token",
+        },
+    )
+
+    with pytest.raises(ToolException, match=message):
+        _invoke_transaction_summary(runtime)
 
 
 def test_get_transactions_returns_stable_payload_and_forwards_filters() -> None:

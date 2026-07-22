@@ -21,8 +21,9 @@ from src.agents.wing.state import (
     StandardParams,
     WingRuntimeContext,
 )
-from src.agents.wing.tools import get_transactions_by_category
+from src.agents.wing.tools import get_transactions_summary
 from src.config import Settings
+from src.providers.ww_data_schemas import TransactionSummaryResponse
 
 
 class FakeStructuredLLM:
@@ -48,6 +49,30 @@ class FakeRuntime:
 class ToolSmokeState(TypedDict, total=False):
     messages: Annotated[list[AnyMessage], add_messages]
     current_turn: dict[str, object]
+
+
+class FakeTransactionSummaryClient:
+    async def get_transaction_summary(
+        self,
+        **kwargs: object,
+    ) -> TransactionSummaryResponse:
+        return TransactionSummaryResponse.model_validate(
+            {
+                "gross_expense": 184500,
+                "refunds": 2500,
+                "net_spending": 182000,
+                "income": 520000,
+                "net_activity": 338000,
+                "expense_transaction_count": 68,
+                "refund_transaction_count": 2,
+                "income_transaction_count": 3,
+                "average_expense": 2713.24,
+                "average_monthly_spending": 182000.0,
+                "from_date": "2026-06-01",
+                "to_date": "2026-06-30",
+                "included_account_types": ["CHECKING", "CREDIT_CARD"],
+            }
+        )
 
 
 def make_settings(**overrides: object) -> Settings:
@@ -208,7 +233,7 @@ def test_collect_results_uses_tool_payload_and_runtime_identity() -> None:
                 ToolMessage(
                     content=json.dumps(
                         {
-                            "result_type": "transactions_summary",
+                            "result_type": "transaction_summary",
                             "data": {"total": 100},
                             "metadata": {"currency": "USD"},
                         }
@@ -223,7 +248,7 @@ def test_collect_results_uses_tool_payload_and_runtime_identity() -> None:
     assert result["current_turn"]["tool_results"] == [
         {
             "result_id": "call-1",
-            "result_type": "transactions_summary",
+            "result_type": "transaction_summary",
             "source_tool": "get_transactions_summary",
             "data": {"total": 100},
             "metadata": {"currency": "USD"},
@@ -291,40 +316,43 @@ def test_record_direct_response_stores_answer_on_current_turn() -> None:
     }
 
 
-def test_collect_results_accepts_injected_state_toolnode_payload() -> None:
-    graph = StateGraph(ToolSmokeState)
-    graph.add_node("tools", ToolNode([get_transactions_by_category]))
+def test_collect_results_accepts_transaction_summary_toolnode_payload() -> None:
+    graph = StateGraph(ToolSmokeState, context_schema=WingRuntimeContext)
+    graph.add_node("tools", ToolNode([get_transactions_summary]))
     graph.add_edge(START, "tools")
     app = graph.compile()
 
-    tool_state = app.invoke(
-        {
-            "messages": [
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "get_transactions_by_category",
-                            "args": {},
-                            "id": "call-1",
-                            "type": "tool_call",
-                        }
-                    ],
-                )
-            ],
-            "current_turn": {
-                "filters": ResolvedFilters(
-                    params=StandardParams(
-                        filter_by=[
-                            FilterByInputs(
-                                field_name="category",
-                                values=["Dining"],
-                            )
-                        ]
+    tool_state = asyncio.run(
+        app.ainvoke(
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "get_transactions_summary",
+                                "args": {"text": "summarize June"},
+                                "id": "call-1",
+                                "type": "tool_call",
+                            }
+                        ],
                     )
-                )
+                ],
+                "current_turn": {
+                    "filters": ResolvedFilters(
+                        params=StandardParams(
+                            from_date=datetime(2026, 6, 1),
+                            to_date=datetime(2026, 6, 30),
+                        ),
+                        date_source="explicit",
+                    )
+                },
             },
-        }
+            context={
+                "ww_data_client": FakeTransactionSummaryClient(),
+                "access_token": "secret-token",
+            },
+        )
     )
 
     nodes = make_nodes(ResolvedFilters())
@@ -337,16 +365,12 @@ def test_collect_results_accepts_injected_state_toolnode_payload() -> None:
 
     assert result["current_turn"]["tool_results"][0]["result_id"] == "call-1"
     assert result["current_turn"]["tool_results"][0]["result_type"] == (
-        "transactions_by_category"
+        "transaction_summary"
     )
     assert result["current_turn"]["tool_results"][0]["source_tool"] == (
-        "get_transactions_by_category"
+        "get_transactions_summary"
     )
     data = result["current_turn"]["tool_results"][0]["data"]
-    assert len(data) == 1
-    assert data[0]["category"] == "Dining"
-    assert data[0]["total_amount"] == 61.02
-    assert [
-        transaction["description"] for transaction in data[0]["transactions"]
-    ] == ["Starbucks", "Chipotle", "DoorDash"]
+    assert data["net_activity"] == 338000
+    assert data["included_account_types"] == ["CHECKING", "CREDIT_CARD"]
     assert result["current_turn"]["tool_errors"] == []

@@ -1,3 +1,4 @@
+import enum
 from datetime import date, datetime, timezone
 from typing import Literal, Optional
 from uuid import UUID
@@ -97,3 +98,54 @@ class CashFlowHistoryResponse(BaseModel):
     to_date: date
     granularity: Literal["day", "week", "month"]
     periods: list[CashFlowPeriodResponse]
+
+
+class AccountTypeEnum(enum.Enum):
+    CREDIT_CARD = "CREDIT_CARD"
+    CHECKING = "CHECKING"
+    SAVINGS = "SAVINGS"
+    CASH = "CASH"
+    INVESTMENT = "INVESTMENT"
+    LOAN = "LOAN"
+    OTHER = "OTHER"
+
+
+class TransactionSummaryRequest(BaseModel):
+    from_date: date
+    to_date: date
+    account_types: list[AccountTypeEnum] = Field(
+        default_factory=lambda: [
+            AccountTypeEnum.CHECKING,
+            AccountTypeEnum.CREDIT_CARD,
+        ],
+        min_length=1,
+    )
+
+    @field_validator("account_types")
+    @classmethod
+    def deduplicate_account_types(
+        cls, value: list[AccountTypeEnum]
+    ) -> list[AccountTypeEnum]:
+        return list(dict.fromkeys(value))
+
+    @model_validator(mode="after")
+    def validate_date_range(self) -> "TransactionSummaryRequest":
+        if self.from_date > self.to_date:
+            raise ValueError("from_date cannot be after to_date")
+        return self
+
+
+class TransactionSummaryResponse(BaseModel):
+    gross_expense: int
+    refunds: int
+    net_spending: int
+    income: int
+    net_activity: int
+    expense_transaction_count: int
+    refund_transaction_count: int
+    income_transaction_count: int
+    average_expense: float
+    average_monthly_spending: float
+    from_date: date
+    to_date: date
+    included_account_types: list[AccountTypeEnum]

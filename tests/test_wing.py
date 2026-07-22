@@ -403,6 +403,90 @@ def test_wing_agent_route_returns_sanitized_cash_flow_results(monkeypatch):
     ]
 
 
+def test_wing_agent_route_returns_allowlisted_transaction_summary(monkeypatch):
+    class FakeGraph:
+        async def ainvoke(self, state, context, config):
+            return {
+                "current_turn": {
+                    **state["current_turn"],
+                    "final_answer": "Your June net activity was positive.",
+                    "tool_results": [
+                        {
+                            "result_id": "call-1",
+                            "result_type": "transaction_summary",
+                            "source_tool": "get_transactions_summary",
+                            "metadata": {"source": "do not expose"},
+                            "ui": "transactions_summary_ui",
+                            "data": {
+                                "gross_expense": 184500,
+                                "refunds": 2500,
+                                "net_spending": 182000,
+                                "income": 520000,
+                                "net_activity": 338000,
+                                "expense_transaction_count": 68,
+                                "refund_transaction_count": 2,
+                                "income_transaction_count": 3,
+                                "average_expense": 2713.24,
+                                "average_monthly_spending": 182000.0,
+                                "from_date": "2026-06-01",
+                                "to_date": "2026-06-30",
+                                "included_account_types": [
+                                    "CHECKING",
+                                    "CREDIT_CARD",
+                                ],
+                                "provider_payload": "private",
+                            },
+                        }
+                    ],
+                }
+            }
+
+    class FakeLLM:
+        def bind_tools(self, tools):
+            return self
+
+    monkeypatch.setattr(WingAgent, "_build_llm", lambda self: FakeLLM())
+    monkeypatch.setattr(
+        "src.agents.wing.agent.build_graph",
+        lambda **kwargs: FakeGraph(),
+    )
+
+    app = FastAPI()
+    app.state.settings = make_settings()
+    app.state.wing_checkpointer = InMemorySaver()
+    app.include_router(wing.router, prefix="/agents/wing")
+    client = TestClient(app)
+
+    response = client.post(
+        "/agents/wing/invoke",
+        json={"message": "Summarize June.", "profile": "insights"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["results"] == [
+        {
+            "id": "call-1",
+            "type": "transaction_summary",
+            "ui": "transactions_summary_ui",
+            "data": {
+                "gross_expense": 184500,
+                "refunds": 2500,
+                "net_spending": 182000,
+                "income": 520000,
+                "net_activity": 338000,
+                "expense_transaction_count": 68,
+                "refund_transaction_count": 2,
+                "income_transaction_count": 3,
+                "average_expense": 2713.24,
+                "average_monthly_spending": 182000.0,
+                "from_date": "2026-06-01",
+                "to_date": "2026-06-30",
+                "included_account_types": ["CHECKING", "CREDIT_CARD"],
+            },
+        }
+    ]
+
+
 def test_wing_agent_route_returns_allowlisted_spending_by_category_results(
     monkeypatch,
 ):

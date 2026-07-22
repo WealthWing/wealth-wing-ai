@@ -14,8 +14,10 @@ from src.providers.ww_data_client import (
     WWDataUnavailableError,
 )
 from src.providers.ww_data_schemas import (
+    AccountTypeEnum,
     CashFlowHistoryRequest,
     CategorySpendingParams,
+    TransactionSummaryRequest,
     TransactionsQueryParams,
 )
 
@@ -446,6 +448,232 @@ def test_get_cash_flow_history_maps_network_failures() -> None:
                 await client.get_cash_flow_history(
                     access_token="secret-token",
                     request=CashFlowHistoryRequest(
+                        from_date=date(2026, 6, 1),
+                        to_date=date(2026, 6, 30),
+                    ),
+                )
+
+    asyncio.run(run())
+
+
+def _transaction_summary_response_payload() -> dict[str, object]:
+    return {
+        "gross_expense": 184500,
+        "refunds": 2500,
+        "net_spending": 182000,
+        "income": 520000,
+        "net_activity": 338000,
+        "expense_transaction_count": 68,
+        "refund_transaction_count": 2,
+        "income_transaction_count": 3,
+        "average_expense": 2713.24,
+        "average_monthly_spending": 182000.0,
+        "from_date": "2026-06-01",
+        "to_date": "2026-06-30",
+        "included_account_types": ["SAVINGS", "CHECKING"],
+    }
+
+
+def test_transaction_summary_request_defaults_deduplicates_and_validates() -> None:
+    request = TransactionSummaryRequest(
+        from_date=date(2026, 6, 1),
+        to_date=date(2026, 6, 30),
+    )
+    assert request.account_types == [
+        AccountTypeEnum.CHECKING,
+        AccountTypeEnum.CREDIT_CARD,
+    ]
+
+    deduplicated = TransactionSummaryRequest(
+        from_date=date(2026, 6, 1),
+        to_date=date(2026, 6, 30),
+        account_types=[
+            AccountTypeEnum.SAVINGS,
+            AccountTypeEnum.CHECKING,
+            AccountTypeEnum.SAVINGS,
+        ],
+    )
+    assert deduplicated.account_types == [
+        AccountTypeEnum.SAVINGS,
+        AccountTypeEnum.CHECKING,
+    ]
+
+    with pytest.raises(ValueError, match="from_date cannot be after to_date"):
+        TransactionSummaryRequest(
+            from_date=date(2026, 7, 1),
+            to_date=date(2026, 6, 30),
+        )
+
+    with pytest.raises(ValueError):
+        TransactionSummaryRequest(
+            from_date=date(2026, 6, 1),
+            to_date=date(2026, 6, 30),
+            account_types=[],
+        )
+
+
+def test_get_transaction_summary_forwards_auth_and_query_parameters() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, json=_transaction_summary_response_payload())
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            client = WWDataClient(http_client, "https://data.example.test/")
+            result = await client.get_transaction_summary(
+                access_token="secret-token",
+                request=TransactionSummaryRequest(
+                    from_date=date(2026, 6, 1),
+                    to_date=date(2026, 6, 30),
+                    account_types=[
+                        AccountTypeEnum.SAVINGS,
+                        AccountTypeEnum.CHECKING,
+                        AccountTypeEnum.SAVINGS,
+                    ],
+                ),
+            )
+
+        assert result.gross_expense == 184500
+        assert result.average_expense == 2713.24
+        assert result.from_date == date(2026, 6, 1)
+        assert result.included_account_types == [
+            AccountTypeEnum.SAVINGS,
+            AccountTypeEnum.CHECKING,
+        ]
+
+    asyncio.run(run())
+
+    request = captured["request"]
+    assert isinstance(request, httpx.Request)
+    assert request.method == "GET"
+    assert str(request.url.copy_with(query=None)) == (
+        "https://data.example.test/transaction/summary"
+    )
+    assert request.headers["Authorization"] == "Bearer secret-token"
+    assert list(request.url.params.multi_items()) == [
+        ("from_date", "2026-06-01"),
+        ("to_date", "2026-06-30"),
+        ("account_types", "SAVINGS"),
+        ("account_types", "CHECKING"),
+    ]
+
+
+def test_get_transaction_summary_uses_default_account_types() -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        payload = _transaction_summary_response_payload()
+        payload["included_account_types"] = ["CHECKING", "CREDIT_CARD"]
+        return httpx.Response(200, json=payload)
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            client = WWDataClient(http_client, "https://data.example.test")
+            await client.get_transaction_summary(
+                access_token="secret-token",
+                request=TransactionSummaryRequest(
+                    from_date=date(2026, 6, 1),
+                    to_date=date(2026, 6, 30),
+                ),
+            )
+
+    asyncio.run(run())
+
+    request = captured["request"]
+    assert isinstance(request, httpx.Request)
+    assert request.url.params.get_list("account_types") == [
+        "CHECKING",
+        "CREDIT_CARD",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status_code", "exception_type"),
+    [
+        (400, WWDataResponseError),
+        (401, WWDataAuthorizationError),
+        (403, WWDataAuthorizationError),
+        (503, WWDataResponseError),
+    ],
+)
+def test_get_transaction_summary_maps_http_errors(
+    status_code: int,
+    exception_type: type[Exception],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, request=request)
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            client = WWDataClient(http_client, "https://data.example.test")
+            with pytest.raises(exception_type):
+                await client.get_transaction_summary(
+                    access_token="secret-token",
+                    request=TransactionSummaryRequest(
+                        from_date=date(2026, 6, 1),
+                        to_date=date(2026, 6, 30),
+                    ),
+                )
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        httpx.Response(200, content=b"not-json"),
+        httpx.Response(
+            200,
+            json={
+                "from_date": "2026-06-01",
+                "to_date": "2026-06-30",
+                "included_account_types": ["CHECKING"],
+            },
+        ),
+    ],
+)
+def test_get_transaction_summary_rejects_invalid_responses(
+    response: httpx.Response,
+) -> None:
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda request: response)
+        ) as http_client:
+            client = WWDataClient(http_client, "https://data.example.test")
+            with pytest.raises(WWDataResponseError):
+                await client.get_transaction_summary(
+                    access_token="secret-token",
+                    request=TransactionSummaryRequest(
+                        from_date=date(2026, 6, 1),
+                        to_date=date(2026, 6, 30),
+                    ),
+                )
+
+    asyncio.run(run())
+
+
+def test_get_transaction_summary_maps_network_failures() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    async def run() -> None:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            client = WWDataClient(http_client, "https://data.example.test")
+            with pytest.raises(WWDataUnavailableError):
+                await client.get_transaction_summary(
+                    access_token="secret-token",
+                    request=TransactionSummaryRequest(
                         from_date=date(2026, 6, 1),
                         to_date=date(2026, 6, 30),
                     ),

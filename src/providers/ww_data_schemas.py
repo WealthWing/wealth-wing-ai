@@ -110,6 +110,65 @@ class AccountTypeEnum(enum.Enum):
     OTHER = "OTHER"
 
 
+class TransactionsAllRequest(BaseModel):
+    category_ids: list[UUID] | None = Field(
+        default=None,
+        description=(
+            "Category UUIDs explicitly provided or resolved from trusted data; "
+            "never infer UUIDs from category names."
+        ),
+    )
+    category_names: list[str] | None = Field(
+        default=None,
+        description="Category names explicitly requested by the user.",
+    )
+    account_ids: list[UUID] | None = Field(
+        default=None,
+        description=(
+            "Account UUIDs explicitly provided or resolved from trusted data; "
+            "never infer UUIDs from account names."
+        ),
+    )
+    account_names: list[str] | None = Field(
+        default=None,
+        description="Account names explicitly requested by the user.",
+    )
+    merchant_search: str | None = Field(
+        default=None,
+        description="Merchant name text explicitly requested by the user.",
+    )
+    transaction_types: list[str] | None = Field(
+        default=None,
+        description="Transaction types explicitly requested by the user.",
+    )
+    minimum_amount_cents: int | None = Field(
+        default=None,
+        ge=0,
+        description="Minimum transaction amount magnitude in cents.",
+    )
+    maximum_amount_cents: int | None = Field(
+        default=None,
+        ge=0,
+        description="Maximum transaction amount magnitude in cents.",
+    )
+    account_type: AccountTypeEnum | None = Field(
+        default=None,
+        description="Account type explicitly requested by the user.",
+    )
+
+    @model_validator(mode="after")
+    def validate_amount_range(self) -> "TransactionsAllRequest":
+        if (
+            self.minimum_amount_cents is not None
+            and self.maximum_amount_cents is not None
+            and self.minimum_amount_cents > self.maximum_amount_cents
+        ):
+            raise ValueError(
+                "minimum_amount_cents cannot exceed maximum_amount_cents"
+            )
+        return self
+
+
 class TransactionSummaryRequest(BaseModel):
     from_date: date
     to_date: date

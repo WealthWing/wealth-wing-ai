@@ -4,7 +4,6 @@ import asyncio
 import ast
 import json
 import logging
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -26,7 +25,6 @@ from src.agents.wing.profiles import PROFILES
 from src.agents.wing.state import (
     CurrentTurn,
     FinalAnswer,
-    FilterByInputs,
     ResolvedFilters,
     ToolResult,
     ToolResultPayload,
@@ -182,9 +180,9 @@ Rules:
 - Do not invent a default date range.
 - If the user does not mention a time period, leave from_date and to_date as null.
 - Default page=1, page_size=20, and sort_order="desc" unless explicitly requested.
-- Category/type/account filters should be extracted into filter_by. Example:
-  "spending for dining and income" should set filter_by=[{{"field_name":"category","values":["Dining","Income"]}}].
-- Search is only for free-text merchant or description matching. Example:
+- Do not extract category, account, merchant, transaction-type, amount, or
+  account-type filters. Those belong to the selected tool's arguments.
+- Search is only for general description matching. Example:
   "Find transactions with 'Starbucks' in the description" should set search="Starbucks".
 - Return only the structured output.
                     """.strip()),
@@ -200,17 +198,6 @@ Rules:
             raise
 
         params = extracted_filters.params
-        existing_category_values = _filter_values(params.filter_by, "category")
-        if not existing_category_values:
-            inferred_categories = _infer_category_filter_values(user_input)
-            if inferred_categories:
-                params.filter_by.append(
-                    FilterByInputs(
-                        field_name="category",
-                        values=inferred_categories,
-                    )
-                )
-
         date_source = (
             "explicit" if params.from_date or params.to_date else "not_applicable"
         )
@@ -642,104 +629,6 @@ def _tool_call_signature(tool_call: ToolCall) -> str:
         default=str,
     )
     return f"{tool_name}:{serialized_args}"
-
-
-_FILTER_STOP_PHRASES = (
-    "this month",
-    "last month",
-    "this year",
-    "last year",
-    "last week",
-    "this week",
-    "today",
-    "yesterday",
-)
-
-_FILTER_STOP_WORDS = {
-    "a",
-    "an",
-    "and",
-    "for",
-    "how",
-    "is",
-    "me",
-    "my",
-    "of",
-    "please",
-    "show",
-    "spending",
-    "the",
-    "transactions",
-}
-
-_KNOWN_CATEGORY_VALUES = {
-    "dining",
-    "groceries",
-    "health",
-    "housing",
-    "income",
-    "shopping",
-    "subscriptions",
-    "transportation",
-    "utilities",
-}
-
-
-def _filter_values(filters: list[FilterByInputs], field_name: str) -> list[str]:
-    return [
-        value
-        for filter_by in filters
-        if filter_by.field_name == field_name
-        for value in filter_by.values
-    ]
-
-
-def _infer_category_filter_values(user_input: str) -> list[str]:
-    normalized_input = user_input.strip()
-    if not normalized_input:
-        return []
-
-    lowered = normalized_input.lower()
-    values = [
-        _restore_filter_value_casing(term)
-        for term in sorted(_KNOWN_CATEGORY_VALUES, key=len, reverse=True)
-        if re.search(rf"(?<!\w){re.escape(term)}(?!\w)", lowered)
-    ]
-    if values:
-        return values
-
-    for pattern in (
-        r"\b(?:for|on|at|from|with|about)\s+(.+?)(?:\?|$)",
-        r"\bcategory\s+(.+?)(?:\?|$)",
-    ):
-        match = re.search(pattern, lowered)
-        if not match:
-            continue
-
-        candidates = _clean_filter_candidates(match.group(1))
-        if candidates:
-            return candidates
-
-    return []
-
-
-def _clean_filter_candidates(candidate: str) -> list[str]:
-    cleaned = candidate.strip(" .?!'\"")
-    for phrase in _FILTER_STOP_PHRASES:
-        cleaned = re.sub(rf"\b{re.escape(phrase)}\b", "", cleaned)
-
-    words = [
-        word
-        for word in re.split(r"[\s,]+", cleaned.strip())
-        if word and word not in _FILTER_STOP_WORDS
-    ]
-    known_words = [word for word in words if word in _KNOWN_CATEGORY_VALUES]
-
-    return [_restore_filter_value_casing(word) for word in known_words]
-
-
-def _restore_filter_value_casing(value: str) -> str:
-    return value.title()
 
 
 async def _ainvoke_model(model: Any, messages: Any) -> Any:

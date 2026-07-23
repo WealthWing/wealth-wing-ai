@@ -16,7 +16,6 @@ from typing_extensions import Annotated, TypedDict
 from src.agents.wing.configuration import WingAgentConfiguration
 from src.agents.wing.nodes import WingAgentNodes
 from src.agents.wing.state import (
-    FilterByInputs,
     ResolvedFilters,
     StandardParams,
     WingRuntimeContext,
@@ -171,7 +170,7 @@ def test_resolve_filters_preserves_explicit_dates_from_llm_dict() -> None:
     assert filters.params.page == 2
 
 
-def test_resolve_filters_infers_category_filter_when_llm_omits_it() -> None:
+def test_resolve_filters_leaves_transaction_categories_to_the_tool_call() -> None:
     nodes = make_nodes(
         {
             "params": {
@@ -208,9 +207,7 @@ def test_resolve_filters_infers_category_filter_when_llm_omits_it() -> None:
     filters = result["current_turn"]["filters"]
 
     assert filters.params.search is None
-    assert filters.params.filter_by == [
-        FilterByInputs(field_name="category", values=["Dining"])
-    ]
+    assert filters.params.filter_by == []
     assert filters.params.sort_by == "date"
 
 
@@ -342,6 +339,33 @@ def test_route_after_llm_stops_duplicate_tool_call() -> None:
     }
 
     assert nodes.route_after_llm(state) == "final_answer"
+
+
+def test_route_after_llm_allows_same_tool_with_different_filters() -> None:
+    nodes = make_nodes(ResolvedFilters())
+
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_transactions",
+                        "args": {"category_names": ["Dining"]},
+                        "id": "call-2",
+                    }
+                ],
+            )
+        ],
+        "current_turn": {
+            "tool_round_count": 1,
+            "tool_call_signatures": [
+                'get_transactions:{"category_names":["Groceries"]}'
+            ],
+        },
+    }
+
+    assert nodes.route_after_llm(state) == "resolve_filters"
 
 
 def test_route_after_llm_stops_after_configured_tool_round_limit() -> None:

@@ -10,6 +10,7 @@ from src.providers.ww_data_schemas import (
     CategorySpendingResponse,
     TransactionSummaryRequest,
     TransactionSummaryResponse,
+    TransactionsAllRequest,
     TransactionsAllResponse,
     TransactionsQueryParams,
 )
@@ -45,8 +46,13 @@ class WWDataClient:
         *,
         access_token: str,
         params: TransactionsQueryParams,
+        transaction_filters: TransactionsAllRequest | None = None,
     ) -> TransactionsAllResponse:
         query_params = params.model_dump(mode="json", exclude_none=True)
+        if transaction_filters is not None:
+            query_params.update(
+                transaction_filters.model_dump(mode="json", exclude_none=True)
+            )
         headers = {"Authorization": f"Bearer {access_token}"}
 
         try:

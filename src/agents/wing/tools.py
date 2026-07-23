@@ -14,10 +14,12 @@ from src.providers.ww_data_client import (
     WWDataUnavailableError,
 )
 from src.providers.ww_data_schemas import (
+    AccountTypeEnum,
     CashFlowHistoryRequest,
     CategorySpendingParams,
     TransactionResponse,
     TransactionSummaryRequest,
+    TransactionsAllRequest,
     TransactionsQueryParams,
 )
 from src.utils.format import format_cents
@@ -32,6 +34,7 @@ from src.agents.wing.state import (
     WingGraphState,
     WingRuntimeContext,
 )
+from src.agents.wing.tool_schemas import GetTransactionsInput
 
 
 
@@ -155,22 +158,47 @@ async def get_transactions_summary(
     )
 
 
-@tool
+@tool(args_schema=GetTransactionsInput)
 async def get_transactions(
-    text: str,
     runtime: ToolRuntime[WingRuntimeContext, WingGraphState],
+    category_ids: list[UUID] | None = None,
+    category_names: list[str] | None = None,
+    account_ids: list[UUID] | None = None,
+    account_names: list[str] | None = None,
+    merchant_search: str | None = None,
+    transaction_types: list[str] | None = None,
+    minimum_amount_cents: int | None = None,
+    maximum_amount_cents: int | None = None,
+    account_type: AccountTypeEnum | None = None,
 ) -> ToolResultPayload:
-    """Return a paginated list of transactions matching the resolved filters."""
-    del text
+    """Return transactions matching shared query and endpoint-specific filters.
+
+    Supply only filters explicitly requested by the user. Category and account
+    names belong in the name fields. UUID fields may only contain identifiers
+    explicitly provided by the user or obtained from trusted application data.
+    Amount bounds are non-negative magnitudes expressed in cents.
+    """
     filters = runtime.state.get("current_turn", {}).get("filters", {})
     try:
         resolved_filters = _coerce_resolved_filters(filters)
-    except (TypeError, ValidationError) as exc:
+        transaction_filters = TransactionsAllRequest(
+            category_ids=category_ids,
+            category_names=category_names,
+            account_ids=account_ids,
+            account_names=account_names,
+            merchant_search=merchant_search,
+            transaction_types=transaction_types,
+            minimum_amount_cents=minimum_amount_cents,
+            maximum_amount_cents=maximum_amount_cents,
+            account_type=account_type,
+        )
+    except (TypeError, ValueError, ValidationError) as exc:
         raise ToolException("Transaction request filters are invalid.") from exc
 
     if resolved_filters.params.filter_by:
         raise ToolException(
-            "Filtered transaction lists are not supported by the data service yet."
+            "Legacy global transaction filters are not supported; use the "
+            "transaction tool filters."
         )
 
     ww_data_client = runtime.context.get("ww_data_client")
@@ -195,6 +223,7 @@ async def get_transactions(
         response = await ww_data_client.get_transactions(
             access_token=access_token,
             params=query,
+            transaction_filters=transaction_filters,
         )
     except WWDataAuthorizationError as exc:
         raise ToolException("Transaction data authorization failed.") from exc
@@ -217,7 +246,13 @@ async def get_transactions(
             "has_more": response.has_more,
         },
         metadata={
-            "filters": _serialize_tool_metadata(resolved_filters),
+            "filters": {
+                **_serialize_tool_metadata(resolved_filters),
+                "transaction_filters": transaction_filters.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                ),
+            },
             "source": "wealth-wing-data",
         },
         ui="transactions_ui",

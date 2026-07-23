@@ -6,6 +6,7 @@ from datetime import date, datetime, timezone
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from src.providers.ww_data_client import (
     WWDataAuthorizationError,
@@ -18,6 +19,7 @@ from src.providers.ww_data_schemas import (
     CashFlowHistoryRequest,
     CategorySpendingParams,
     TransactionSummaryRequest,
+    TransactionsAllRequest,
     TransactionsQueryParams,
 )
 
@@ -79,6 +81,17 @@ def test_get_transactions_forwards_auth_and_supported_params() -> None:
                     from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
                     to_date=datetime(2026, 6, 30, 23, 59, tzinfo=timezone.utc),
                 ),
+                transaction_filters=TransactionsAllRequest(
+                    category_ids=[CATEGORY_ID],
+                    category_names=["Groceries", "Dining"],
+                    account_ids=[ACCOUNT_ID],
+                    account_names=["Chase Checking"],
+                    merchant_search="ShopRite",
+                    transaction_types=["expense", "refund"],
+                    minimum_amount_cents=5000,
+                    maximum_amount_cents=10000,
+                    account_type=AccountTypeEnum.CHECKING,
+                ),
             )
 
         assert result.total_count == 41
@@ -92,7 +105,17 @@ def test_get_transactions_forwards_auth_and_supported_params() -> None:
         "https://data.example.test/transaction/all"
     )
     assert request.headers["Authorization"] == "Bearer secret-token"
-    assert dict(request.url.params) == {
+    assert {
+        key: value
+        for key, value in request.url.params.items()
+        if key not in {
+            "category_ids",
+            "category_names",
+            "account_ids",
+            "account_names",
+            "transaction_types",
+        }
+    } == {
         "page": "2",
         "page_size": "20",
         "sort_by": "date",
@@ -100,7 +123,33 @@ def test_get_transactions_forwards_auth_and_supported_params() -> None:
         "search": "ShopRite",
         "from_date": "2026-06-01T00:00:00Z",
         "to_date": "2026-06-30T23:59:00Z",
+        "merchant_search": "ShopRite",
+        "minimum_amount_cents": "5000",
+        "maximum_amount_cents": "10000",
+        "account_type": "CHECKING",
     }
+    assert request.url.params.get_list("category_ids") == [CATEGORY_ID]
+    assert request.url.params.get_list("category_names") == [
+        "Groceries",
+        "Dining",
+    ]
+    assert request.url.params.get_list("account_ids") == [ACCOUNT_ID]
+    assert request.url.params.get_list("account_names") == ["Chase Checking"]
+    assert request.url.params.get_list("transaction_types") == [
+        "expense",
+        "refund",
+    ]
+
+
+def test_transactions_all_request_rejects_invalid_amount_range() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="minimum_amount_cents cannot exceed maximum_amount_cents",
+    ):
+        TransactionsAllRequest(
+            minimum_amount_cents=10000,
+            maximum_amount_cents=5000,
+        )
 
 
 @pytest.mark.parametrize(

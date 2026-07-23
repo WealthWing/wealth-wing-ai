@@ -31,6 +31,7 @@ from src.providers.ww_data_client import (
     WWDataUnavailableError,
 )
 from src.providers.ww_data_schemas import (
+    AccountTypeEnum,
     CashFlowHistoryResponse,
     CategorySpendingResponse,
     TransactionSummaryResponse,
@@ -59,11 +60,9 @@ class ToolState(TypedDict, total=False):
     current_turn: dict[str, Any]
 
 
-def _invoke(runtime: FakeToolRuntime) -> dict[str, Any]:
+def _invoke(runtime: FakeToolRuntime, **kwargs: Any) -> dict[str, Any]:
     assert get_transactions.coroutine is not None
-    return asyncio.run(
-        get_transactions.coroutine(text="show transactions", runtime=runtime)
-    )
+    return asyncio.run(get_transactions.coroutine(runtime=runtime, **kwargs))
 
 
 def _invoke_cash_flow(
@@ -396,7 +395,18 @@ def test_get_transactions_returns_stable_payload_and_forwards_filters() -> None:
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
-    result = _invoke(runtime)
+    result = _invoke(
+        runtime,
+        category_ids=[UUID("43581d15-1a1d-49ce-adc6-f0fe6184f18a")],
+        category_names=["Groceries", "Dining"],
+        account_ids=[UUID("f219bb47-8f12-455e-b575-e384ac524999")],
+        account_names=["Chase Checking"],
+        merchant_search="ShopRite",
+        transaction_types=["expense", "refund"],
+        minimum_amount_cents=5000,
+        maximum_amount_cents=10000,
+        account_type=AccountTypeEnum.CHECKING,
+    )
 
     assert client.calls[0]["access_token"] == "secret-token"
     query = client.calls[0]["params"]
@@ -408,6 +418,17 @@ def test_get_transactions_returns_stable_payload_and_forwards_filters() -> None:
         "search": "ShopRite",
         "from_date": datetime(2026, 6, 1, tzinfo=timezone.utc),
         "to_date": datetime(2026, 6, 30, tzinfo=timezone.utc),
+    }
+    assert client.calls[0]["transaction_filters"].model_dump(mode="json") == {
+        "category_ids": ["43581d15-1a1d-49ce-adc6-f0fe6184f18a"],
+        "category_names": ["Groceries", "Dining"],
+        "account_ids": ["f219bb47-8f12-455e-b575-e384ac524999"],
+        "account_names": ["Chase Checking"],
+        "merchant_search": "ShopRite",
+        "transaction_types": ["expense", "refund"],
+        "minimum_amount_cents": 5000,
+        "maximum_amount_cents": 10000,
+        "account_type": "CHECKING",
     }
     assert result["data"] == {
         "transactions": [
@@ -456,7 +477,10 @@ def test_toolnode_injects_state_and_runtime_context() -> None:
                         tool_calls=[
                             {
                                 "name": "get_transactions",
-                                "args": {"text": "show transactions"},
+                                "args": {
+                                    "category_names": ["Groceries"],
+                                    "minimum_amount_cents": 5000,
+                                },
                                 "id": "call-1",
                                 "type": "tool_call",
                             }
@@ -476,6 +500,42 @@ def test_toolnode_injects_state_and_runtime_context() -> None:
     assert isinstance(tool_message, ToolMessage)
     assert tool_message.status == "success"
     assert client.calls[0]["access_token"] == "secret-token"
+    assert client.calls[0]["transaction_filters"].category_names == [
+        "Groceries"
+    ]
+    assert client.calls[0]["transaction_filters"].minimum_amount_cents == 5000
+
+
+def test_get_transactions_exposes_only_endpoint_filters_to_the_model() -> None:
+    schema = get_transactions.tool_call_schema.model_json_schema()
+
+    assert set(schema["properties"]) == {
+        "category_ids",
+        "category_names",
+        "account_ids",
+        "account_names",
+        "merchant_search",
+        "transaction_types",
+        "minimum_amount_cents",
+        "maximum_amount_cents",
+        "account_type",
+    }
+
+
+def test_get_transactions_rejects_invalid_amount_range_without_provider_call() -> None:
+    client = FakeWWDataClient(_provider_response())
+    runtime = FakeToolRuntime(
+        state={"current_turn": {"filters": ResolvedFilters()}},
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    with pytest.raises(ToolException, match="filters are invalid"):
+        _invoke(
+            runtime,
+            minimum_amount_cents=10000,
+            maximum_amount_cents=5000,
+        )
+    assert client.calls == []
 
 
 def test_get_transactions_rejects_unsupported_filters_without_calling_provider() -> None:

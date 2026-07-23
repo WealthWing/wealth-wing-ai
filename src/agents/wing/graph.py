@@ -50,8 +50,11 @@ def build_graph(
         
         graph.add_conditional_edges(
             "llm",
-            nodes._has_tool_calls,
-            {True: "resolve_filters", False: "final_answer"},
+            nodes.route_after_llm,
+            {
+                "resolve_filters": "resolve_filters",
+                "final_answer": "final_answer",
+            },
         )
         graph.add_edge("resolve_filters", "tools")
         graph.add_edge("tools", "collect_results")

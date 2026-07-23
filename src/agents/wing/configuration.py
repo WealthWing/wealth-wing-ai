@@ -11,7 +11,8 @@ class WingAgentConfiguration:
     default_model: str
     temperature: float = 0.2
     max_tokens: int = 50000
-    recursion_limit: int = 10
+    recursion_limit: int = 16
+    max_tool_rounds: int = 3
     timeout_seconds: float = 30.0
     max_retries: int = 1
     system_prompt_name: str = "default"

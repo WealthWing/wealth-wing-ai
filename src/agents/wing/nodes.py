@@ -11,7 +11,13 @@ from datetime import datetime, timedelta
 from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolCall,
+    ToolMessage,
+)
 from langchain_openai import ChatOpenAI
 from langgraph.runtime import Runtime
 from pydantic import BaseModel
@@ -97,17 +103,46 @@ class WingAgentNodes:
         )
         return {"messages": [response]}
 
-    def _has_tool_calls(self, state: WingGraphState) -> bool:
+    def route_after_llm(self, state: WingGraphState) -> str:
+        """Start another tool round only when it is bounded and non-duplicate."""
         messages = state.get("messages", [])
         if not messages:
-            return False
+            return "final_answer"
 
         last_message = messages[-1]
 
         if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
-            return False
+            return "final_answer"
 
-        return bool(last_message.tool_calls)
+        current_turn = state.get("current_turn", {})
+        tool_round_count = current_turn.get("tool_round_count", 0)
+        if tool_round_count >= self.configuration.max_tool_rounds:
+            logger.warning(
+                "wing_tool_round_limit_reached",
+                extra={
+                    **_log_extra(state, None, "llm"),
+                    "tool_round_count": tool_round_count,
+                    "max_tool_rounds": self.configuration.max_tool_rounds,
+                },
+            )
+            return "final_answer"
+
+        completed_signatures = set(current_turn.get("tool_call_signatures", []))
+        requested_signatures = {
+            _tool_call_signature(tool_call)
+            for tool_call in last_message.tool_calls
+        }
+        if completed_signatures.intersection(requested_signatures):
+            logger.warning(
+                "wing_duplicate_tool_call_blocked",
+                extra={
+                    **_log_extra(state, None, "llm"),
+                    "tool_round_count": tool_round_count,
+                },
+            )
+            return "final_answer"
+
+        return "resolve_filters"
 
     async def resolve_filters(
         self,
@@ -252,19 +287,6 @@ Rules:
 
         recent_tool_messages.reverse()
 
-        if not recent_tool_messages:
-            logger.warning(
-                "wing_tool_results_missing",
-                extra=_log_extra(state, runtime, "collect_results"),
-            )
-            return {
-                "current_turn": {
-                    **current_turn,
-                    "tool_results": current_turn.get("tool_results", []),
-                }
-            }
-
-        # Find the AIMessage that requested these tool calls.
         latest_tool_call_message: AIMessage | None = next(
             (
                 message
@@ -273,7 +295,37 @@ Rules:
             ),
             None,
         )
+        latest_signatures = [
+            _tool_call_signature(tool_call)
+            for tool_call in (
+                latest_tool_call_message.tool_calls
+                if latest_tool_call_message
+                else []
+            )
+        ]
+        tool_call_signatures = list(current_turn.get("tool_call_signatures", []))
+        tool_call_signatures.extend(
+            signature
+            for signature in latest_signatures
+            if signature not in tool_call_signatures
+        )
+        tool_round_count = current_turn.get("tool_round_count", 0) + 1
 
+        if not recent_tool_messages:
+            logger.warning(
+                "wing_tool_results_missing",
+                extra=_log_extra(state, runtime, "collect_results"),
+            )
+            return {
+                "current_turn": {
+                    **current_turn,
+                    "tool_round_count": tool_round_count,
+                    "tool_call_signatures": tool_call_signatures,
+                    "tool_results": current_turn.get("tool_results", []),
+                }
+            }
+
+        # Find the AIMessage that requested these tool calls.
         calls_by_id = (
             {
                 tool_call["id"]: tool_call
@@ -367,6 +419,8 @@ Rules:
         return {
             "current_turn": {
                 **current_turn,
+                "tool_round_count": tool_round_count,
+                "tool_call_signatures": tool_call_signatures,
                 "tool_results": list(results_by_id.values()),
                 "tool_errors": tool_errors,
             }
@@ -569,6 +623,25 @@ def _coerce_tool_result_payload(content: Any) -> ToolResultPayload:
         "metadata": metadata,
         "ui": payload.get("ui"),
     }
+
+
+def _tool_call_signature(tool_call: ToolCall) -> str:
+    """Return a stable signature for arguments that affect tool behavior."""
+    tool_name = tool_call.get("name", "unknown_tool")
+    raw_args = tool_call.get("args", {})
+    args = raw_args if isinstance(raw_args, dict) else {}
+    effective_args = {
+        key: value
+        for key, value in args.items()
+        if key != "text"
+    }
+    serialized_args = json.dumps(
+        effective_args,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return f"{tool_name}:{serialized_args}"
 
 
 _FILTER_STOP_PHRASES = (

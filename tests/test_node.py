@@ -255,6 +255,10 @@ def test_collect_results_uses_tool_payload_and_runtime_identity() -> None:
         }
     ]
     assert result["current_turn"]["tool_errors"] == []
+    assert result["current_turn"]["tool_round_count"] == 1
+    assert result["current_turn"]["tool_call_signatures"] == [
+        "get_transactions_summary:{}"
+    ]
 
 
 def test_collect_results_records_invalid_tool_payload() -> None:
@@ -291,6 +295,78 @@ def test_collect_results_records_invalid_tool_payload() -> None:
         }
     ]
     assert nodes.route_after_tool_results(result) == "final_answer"
+
+
+def test_route_after_llm_starts_first_tool_round() -> None:
+    nodes = make_nodes(ResolvedFilters())
+
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_transactions_summary",
+                        "args": {"text": "summarize the last three months"},
+                        "id": "call-1",
+                    }
+                ],
+            )
+        ],
+        "current_turn": {},
+    }
+
+    assert nodes.route_after_llm(state) == "resolve_filters"
+
+
+def test_route_after_llm_stops_duplicate_tool_call() -> None:
+    nodes = make_nodes(ResolvedFilters())
+
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_transactions_summary",
+                        "args": {"text": "try the summary again"},
+                        "id": "call-2",
+                    }
+                ],
+            )
+        ],
+        "current_turn": {
+            "tool_round_count": 1,
+            "tool_call_signatures": ["get_transactions_summary:{}"],
+        },
+    }
+
+    assert nodes.route_after_llm(state) == "final_answer"
+
+
+def test_route_after_llm_stops_after_configured_tool_round_limit() -> None:
+    nodes = make_nodes(ResolvedFilters())
+
+    state = {
+        "messages": [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_cash_flow_history",
+                        "args": {"text": "monthly history", "granularity": "month"},
+                        "id": "call-4",
+                    }
+                ],
+            )
+        ],
+        "current_turn": {
+            "tool_round_count": nodes.configuration.max_tool_rounds,
+            "tool_call_signatures": [],
+        },
+    }
+
+    assert nodes.route_after_llm(state) == "final_answer"
 
 
 def test_route_after_tool_results_continues_without_errors() -> None:

@@ -116,6 +116,8 @@ class CurrentTurn(TypedDict, total=False):
     user_input: str
     #intent: IntentDecision
     filters: ResolvedFilters
+    tool_round_count: int
+    tool_call_signatures: list[str]
     tool_results: list[ToolResult]
     tool_errors: list[dict[str, Any]]
     #presentation: PresentationPlan

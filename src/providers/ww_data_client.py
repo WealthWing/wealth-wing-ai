@@ -93,7 +93,7 @@ class WWDataClient:
 
         try:
             response = await self._http_client.post(
-                f"{self._base_url}/spending_by_category",
+                f"{self._base_url}/category/spending_by_category",
                 json=payload,
                 headers=headers,
             )

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
-from langchain_core.tools import BaseTool, ToolException, tool
+from langchain_core.tools import BaseTool, ToolException
+from langchain_core.tools import tool  # pyright: ignore[reportUnknownVariableType]
 from langgraph.prebuilt import ToolRuntime
 from pydantic import BaseModel, Field, ValidationError
 from src.providers.ww_data_client import (
@@ -41,10 +42,10 @@ from src.agents.wing.tool_schemas import GetTransactionsInput
 
 
 class TransactionsByCategory(BaseModel):
-    category: str = Field(..., description="The category of the transactions.")
-    total_amount: float = Field(..., description="The total amount for the category.")
-    transactions: list[dict] = Field(
-        ..., description="The list of transactions for the category."
+    category: str = Field(description="The category of the transactions.")
+    total_amount: float = Field(description="The total amount for the category.")
+    transactions: list[dict[str, Any]] = Field(
+        description="The list of transactions for the category."
     )
 
 
@@ -357,15 +358,19 @@ def _tool_result(
     }
 
 
-def _serialize_tool_metadata(value: Any) -> Any:
+def _serialize_tool_metadata(value: object) -> Any:
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
 
     if isinstance(value, dict):
-        return {key: _serialize_tool_metadata(item) for key, item in value.items()}
+        mapping = cast(dict[object, object], value)
+        return {
+            key: _serialize_tool_metadata(item) for key, item in mapping.items()
+        }
 
     if isinstance(value, (list, tuple)):
-        return [_serialize_tool_metadata(item) for item in value]
+        sequence = cast(list[object] | tuple[object, ...], value)
+        return [_serialize_tool_metadata(item) for item in sequence]
 
     return value
 

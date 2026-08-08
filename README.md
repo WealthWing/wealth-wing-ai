@@ -42,7 +42,8 @@ collectors.
 Important environment values:
 
 - `ENABLE_DOCS=false` keeps `/docs`, `/redoc`, and `/openapi.json` disabled by default.
-- `LOG_FORMAT=json` emits structured logs for container platforms.
+- `LOG_FORMAT=pretty` emits readable local terminal logs; use `json` for
+  container platforms and `text` for the minimal legacy format.
 - `CORS_ORIGINS` should be a comma-separated list of trusted frontend origins.
 - `ALLOWED_HOSTS` should be a comma-separated list of valid API hostnames.
 - `TOGETHER_API_KEY` is required for the Together provider health check.

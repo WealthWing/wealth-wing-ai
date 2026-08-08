@@ -81,7 +81,7 @@ class WWDataClient:
             return TransactionsAllResponse.model_validate(response.json())
         except (ValueError, ValidationError) as exc:
             raise WWDataResponseError("ww-data returned invalid JSON") from exc
-
+    
     async def get_spending_by_category(
         self,
         *,

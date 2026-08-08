@@ -251,7 +251,7 @@ Rules:
         self,
         state: WingGraphState,
         runtime: Runtime[WingRuntimeContext] | None = None,
-    ) -> dict:
+    ) -> WingGraphState:
         """
         normalizes them, and saves them under current_turn.tool_results.
 

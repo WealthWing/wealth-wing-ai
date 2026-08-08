@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from datetime import date, datetime, timezone
+from uuid import UUID
 
 import httpx
 import pytest
@@ -82,9 +83,9 @@ def test_get_transactions_forwards_auth_and_supported_params() -> None:
                     to_date=datetime(2026, 6, 30, 23, 59, tzinfo=timezone.utc),
                 ),
                 transaction_filters=TransactionsAllRequest(
-                    category_ids=[CATEGORY_ID],
+                    category_ids=[UUID(CATEGORY_ID)],
                     category_names=["Groceries", "Dining"],
-                    account_ids=[ACCOUNT_ID],
+                    account_ids=[UUID(ACCOUNT_ID)],
                     account_names=["Chase Checking"],
                     merchant_search="ShopRite",
                     transaction_types=["expense", "refund"],
@@ -242,8 +243,8 @@ def test_get_spending_by_category_forwards_auth_and_json_body() -> None:
             result = await client.get_spending_by_category(
                 access_token="secret-token",
                 params=CategorySpendingParams(
-                    from_date=datetime(2026, 6, 1),
-                    to_date=datetime(2026, 6, 30, 23, 59, tzinfo=timezone.utc),
+                    from_date=date(2026, 6, 1),
+                    to_date=date(2026, 6, 30),
                 ),
             )
 
@@ -255,11 +256,13 @@ def test_get_spending_by_category_forwards_auth_and_json_body() -> None:
     request = captured["request"]
     assert isinstance(request, httpx.Request)
     assert request.method == "POST"
-    assert str(request.url) == "https://data.example.test/spending_by_category"
+    assert str(request.url) == (
+        "https://data.example.test/category/spending_by_category"
+    )
     assert request.headers["Authorization"] == "Bearer secret-token"
     assert json.loads(request.content) == {
-        "from_date": "2026-06-01T00:00:00Z",
-        "to_date": "2026-06-30T23:59:00Z",
+        "from_date": "2026-06-01",
+        "to_date": "2026-06-30",
     }
 
 
@@ -400,9 +403,9 @@ def test_get_cash_flow_history_forwards_auth_and_query_parameters() -> None:
                 request=CashFlowHistoryRequest(
                     from_date=date(2026, 6, 1),
                     to_date=date(2026, 6, 30),
-                    category_ids=[CATEGORY_ID],
-                    account_ids=[ACCOUNT_ID],
-                    project_ids=[PROJECT_ID],
+                    category_ids=[UUID(CATEGORY_ID)],
+                    account_ids=[UUID(ACCOUNT_ID)],
+                    project_ids=[UUID(PROJECT_ID)],
                     granularity="month",
                 ),
             )
@@ -416,7 +419,7 @@ def test_get_cash_flow_history_forwards_auth_and_query_parameters() -> None:
     assert isinstance(request, httpx.Request)
     assert request.method == "GET"
     assert str(request.url.copy_with(query=None)) == (
-        "https://data.example.test/cash-flow-history"
+        "https://data.example.test/transaction/cash-flow-history"
     )
     assert request.headers["Authorization"] == "Bearer secret-token"
     assert list(request.url.params.multi_items()) == [

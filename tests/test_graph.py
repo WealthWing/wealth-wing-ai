@@ -1,7 +1,9 @@
 import asyncio
+from typing import cast
 
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 
 from src.agents.wing.configuration import WingAgentConfiguration
@@ -9,6 +11,10 @@ from src.agents.wing.graph import build_graph
 from src.agents.wing.state import FinalAnswer, ResolvedFilters
 
 from tests.test_wing import make_settings
+
+
+def as_chat_model(model: object) -> ChatOpenAI:
+    return cast(ChatOpenAI, model)
 
 
 class FakeStructuredLLM:
@@ -37,8 +43,8 @@ def test_build_graph_compiles_for_profile_without_tools():
         configuration=WingAgentConfiguration.from_settings(settings),
         tools_by_name={},
         tools=(),
-        llm=object(),
-        llm_with_tools=object(),
+        llm=as_chat_model(object()),
+        llm_with_tools=as_chat_model(object()),
         checkpointer=checkpointer,
     )
 
@@ -84,8 +90,8 @@ def test_graph_stops_repeated_successful_tool_call_before_recursion_limit():
         configuration=configuration,
         tools_by_name={repeated_summary.name: repeated_summary},
         tools=(repeated_summary,),
-        llm=FakeBaseLLM(),
-        llm_with_tools=tool_llm,
+        llm=as_chat_model(FakeBaseLLM()),
+        llm_with_tools=as_chat_model(tool_llm),
     )
 
     result = asyncio.run(
@@ -150,8 +156,8 @@ def test_graph_finalizes_at_configured_tool_round_limit():
         configuration=configuration,
         tools_by_name={bounded_summary.name: bounded_summary},
         tools=(bounded_summary,),
-        llm=FakeBaseLLM(),
-        llm_with_tools=tool_llm,
+        llm=as_chat_model(FakeBaseLLM()),
+        llm_with_tools=as_chat_model(tool_llm),
     )
 
     result = asyncio.run(

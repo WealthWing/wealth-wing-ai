@@ -1,6 +1,7 @@
 import asyncio
 import json
 from datetime import datetime
+from typing import cast
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI
@@ -12,7 +13,9 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.runtime import Runtime
 
 from main import create_app
 from src.agents.wing.agent import WingAgent, _serialize_for_json
@@ -20,9 +23,15 @@ from src.agents.wing.configuration import WingAgentConfiguration
 from src.agents.wing.nodes import WingAgentNodes
 from src.agents.wing.profiles import get_profile
 from src.agents.wing.prompts import get_system_prompt
-from src.agents.wing.state import ResolvedFilters, StandardParams
+from src.agents.wing.state import (
+    ResolvedFilters,
+    StandardParams,
+    WingGraphState,
+    WingRuntimeContext,
+)
 from src.config import Settings
 from src.dependencies import get_wing_checkpointer
+from src.providers.ww_data_client import WWDataClient
 from src.routers import wing
 from src.schemas.wing import WingAgentRequest
 
@@ -579,9 +588,13 @@ def test_wing_agent_builds_initial_state_without_runtime_fields(monkeypatch):
     )
 
     assert set(state) == {"current_turn_id", "messages", "current_turn"}
-    assert state["current_turn"]["user_input"] == "hello"
-    assert state["current_turn"]["turn_id"]
-    assert isinstance(state["messages"][0], HumanMessage)
+    current_turn = state.get("current_turn")
+    assert current_turn is not None
+    assert current_turn.get("user_input") == "hello"
+    assert current_turn.get("turn_id")
+    messages = state.get("messages")
+    assert messages is not None
+    assert isinstance(messages[0], HumanMessage)
 
 
 def test_wing_agent_configures_in_memory_checkpoints_per_run(monkeypatch):
@@ -609,20 +622,20 @@ def test_wing_agent_builds_runtime_context(monkeypatch):
         )
     )
 
-    assert context["agent_profile"] == "insights"
-    assert context["additional_prompt"] == "Prefer concise answers."
-    assert context["resolved_system_prompt"] == expected_prompt(
+    assert context.get("agent_profile") == "insights"
+    assert context.get("additional_prompt") == "Prefer concise answers."
+    assert context.get("resolved_system_prompt") == expected_prompt(
         "insights",
         "Prefer concise answers.",
     )
-    assert context["enabled_tools"] == tuple(
+    assert context.get("enabled_tools") == tuple(
         tool.name for tool in get_profile("insights")["tools"]
     )
 
 
 def test_wing_agent_keeps_runtime_credentials_private(monkeypatch):
     captured = patch_agent_graph(monkeypatch)
-    provider_client = object()
+    provider_client = cast(WWDataClient, object())
     agent = WingAgent(
         settings=make_settings(),
         ww_data_client=provider_client,
@@ -671,7 +684,7 @@ def test_wing_agent_debug_output_serializes_current_turn_models():
 
 def test_wing_agent_nodes_read_profile_and_prompt_from_runtime_context():
     class FakeRuntime:
-        context = {
+        context: WingRuntimeContext = {
             "agent_profile": "insights",
             "resolved_system_prompt": "system from runtime",
         }
@@ -690,18 +703,22 @@ def test_wing_agent_nodes_read_profile_and_prompt_from_runtime_context():
         settings=settings,
         configuration=WingAgentConfiguration.from_settings(settings),
         tools_by_name={},
-        llm=llm,
-        llm_with_tools=llm,
+        llm=cast(ChatOpenAI, llm),
+        llm_with_tools=cast(ChatOpenAI, llm),
     )
-    state = {
-        "messages": [HumanMessage(content="hello")],
-        "current_turn": {"turn_id": "turn-1", "user_input": "hello"},
-        "agent_profile": "imports",
-        "resolved_system_prompt": "state prompt should be ignored",
-    }
+    state = cast(
+        WingGraphState,
+        {
+            "messages": [HumanMessage(content="hello")],
+            "current_turn": {"turn_id": "turn-1", "user_input": "hello"},
+            "agent_profile": "imports",
+            "resolved_system_prompt": "state prompt should be ignored",
+        },
+    )
+    runtime = cast(Runtime[WingRuntimeContext], FakeRuntime())
 
-    assert nodes.load_profile(state, FakeRuntime()) == {}
-    response = asyncio.run(nodes._call_llm(state, FakeRuntime()))
+    assert nodes.load_profile(state, runtime) == {}
+    response = asyncio.run(nodes._call_llm(state, runtime))
 
     assert response == {"messages": [AIMessage(content="ok")]}
     assert isinstance(llm.messages[0], SystemMessage)

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import date, datetime, timezone
-from typing import Any
+from collections.abc import Callable, Coroutine
+from datetime import date, datetime, timezone, tzinfo
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
 from langchain_core.messages import AIMessage, AnyMessage, ToolMessage
-from langchain_core.tools import ToolException
+from langchain_core.tools import BaseTool, StructuredTool, ToolException
 from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
@@ -60,39 +61,46 @@ class ToolState(TypedDict, total=False):
     current_turn: dict[str, Any]
 
 
+ToolCoroutine = Callable[..., Coroutine[Any, Any, dict[str, Any]]]
+
+
+def _tool_coroutine(tool: BaseTool) -> ToolCoroutine:
+    assert isinstance(tool, StructuredTool)
+    assert tool.coroutine is not None
+    return cast(ToolCoroutine, tool.coroutine)
+
+
 def _invoke(runtime: FakeToolRuntime, **kwargs: Any) -> dict[str, Any]:
-    assert get_transactions.coroutine is not None
-    return asyncio.run(get_transactions.coroutine(runtime=runtime, **kwargs))
+    return asyncio.run(_tool_coroutine(get_transactions)(runtime=runtime, **kwargs))
 
 
 def _invoke_cash_flow(
     runtime: FakeToolRuntime,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    assert get_cash_flow_history.coroutine is not None
     return asyncio.run(
-        get_cash_flow_history.coroutine(
-            text="show cash flow",
+        _tool_coroutine(get_cash_flow_history)(
             runtime=runtime,
             **kwargs,
         )
     )
 
 
-def _invoke_spending_by_category(runtime: FakeToolRuntime) -> dict[str, Any]:
-    assert get_spending_by_category.coroutine is not None
+def _invoke_spending_by_category(
+    runtime: FakeToolRuntime,
+    **kwargs: Any,
+) -> dict[str, Any]:
     return asyncio.run(
-        get_spending_by_category.coroutine(
-            text="show spending by category",
+        _tool_coroutine(get_spending_by_category)(
             runtime=runtime,
+            **kwargs,
         )
     )
 
 
 def _invoke_transaction_summary(runtime: FakeToolRuntime) -> dict[str, Any]:
-    assert get_transactions_summary.coroutine is not None
     return asyncio.run(
-        get_transactions_summary.coroutine(
+        _tool_coroutine(get_transactions_summary)(
             text="summarize my transactions",
             runtime=runtime,
         )
@@ -238,7 +246,7 @@ def test_get_transactions_summary_defaults_to_last_completed_month(
 ) -> None:
     class FrozenDateTime(datetime):
         @classmethod
-        def now(cls, tz: timezone | None = None) -> FrozenDateTime:
+        def now(cls, tz: tzinfo | None = None) -> FrozenDateTime:
             return cls(2026, 7, 22, tzinfo=tz)
 
     monkeypatch.setattr("src.agents.wing.tools.datetime", FrozenDateTime)
@@ -489,10 +497,13 @@ def test_toolnode_injects_state_and_runtime_context() -> None:
                 ],
                 "current_turn": {"filters": ResolvedFilters()},
             },
-            context={
-                "ww_data_client": client,
-                "access_token": "secret-token",
-            },
+            context=cast(
+                WingRuntimeContext,
+                {
+                    "ww_data_client": client,
+                    "access_token": "secret-token",
+                },
+            ),
         )
     )
 
@@ -507,7 +518,9 @@ def test_toolnode_injects_state_and_runtime_context() -> None:
 
 
 def test_get_transactions_exposes_only_endpoint_filters_to_the_model() -> None:
-    schema = get_transactions.tool_call_schema.model_json_schema()
+    schema_type = cast(BaseTool, get_transactions).tool_call_schema
+    assert not isinstance(schema_type, dict)
+    schema = schema_type.model_json_schema()
 
     assert set(schema["properties"]) == {
         "category_ids",
@@ -607,29 +620,80 @@ def _category_spending_response() -> list[CategorySpendingResponse]:
     ]
 
 
+def test_spending_toolnode_injects_runtime_context() -> None:
+    client = FakeCategorySpendingWWDataClient(_category_spending_response())
+    graph = StateGraph(ToolState, context_schema=WingRuntimeContext)
+    graph.add_node("tools", ToolNode([get_spending_by_category]))
+    graph.add_edge(START, "tools")
+    app = graph.compile()
+
+    result = asyncio.run(
+        app.ainvoke(
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "get_spending_by_category",
+                                "args": {
+                                    "from_date": "2026-01-01",
+                                    "to_date": "2026-01-31",
+                                },
+                                "id": "call-spending",
+                                "type": "tool_call",
+                            }
+                        ],
+                    )
+                ],
+                "current_turn": {},
+            },
+            context=cast(
+                WingRuntimeContext,
+                {
+                    "ww_data_client": client,
+                    "access_token": "secret-token",
+                },
+            ),
+        )
+    )
+
+    tool_message = result["messages"][-1]
+    assert isinstance(tool_message, ToolMessage)
+    assert tool_message.status == "success"
+    assert client.calls[0]["access_token"] == "secret-token"
+    assert client.calls[0]["params"].model_dump(mode="json") == {
+        "from_date": "2026-01-01",
+        "to_date": "2026-01-31",
+        "category_ids": None,
+        "category_names": None,
+    }
+    model_schema_type = cast(BaseTool, get_spending_by_category).tool_call_schema
+    assert not isinstance(model_schema_type, dict)
+    model_schema = model_schema_type.model_json_schema()
+    assert "runtime" not in model_schema["properties"]
+    assert set(model_schema["required"]) == {"from_date", "to_date"}
+
+
 def test_get_spending_by_category_forwards_dates_and_returns_safe_payload() -> None:
     client = FakeCategorySpendingWWDataClient(_category_spending_response())
     runtime = FakeToolRuntime(
-        state={
-            "current_turn": {
-                "filters": ResolvedFilters(
-                    params=StandardParams(
-                        from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
-                        to_date=datetime(2026, 6, 30, tzinfo=timezone.utc),
-                    ),
-                    date_source="explicit",
-                )
-            }
-        },
+        state={"current_turn": {}},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
-    result = _invoke_spending_by_category(runtime)
+    result = _invoke_spending_by_category(
+        runtime,
+        from_date=date(2026, 6, 1),
+        to_date=date(2026, 6, 30),
+    )
 
     params = client.calls[0]["params"]
     assert params.model_dump() == {
-        "from_date": datetime(2026, 6, 1, tzinfo=timezone.utc),
-        "to_date": datetime(2026, 6, 30, tzinfo=timezone.utc),
+        "from_date": date(2026, 6, 1),
+        "to_date": date(2026, 6, 30),
+        "category_ids": None,
+        "category_names": None,
     }
     assert client.calls[0]["access_token"] == "secret-token"
     assert result == {
@@ -645,8 +709,8 @@ def test_get_spending_by_category_forwards_dates_and_returns_safe_payload() -> N
         },
         "metadata": {
             "filters": {
-                "from_date": "2026-06-01T00:00:00Z",
-                "to_date": "2026-06-30T00:00:00Z",
+                "from_date": "2026-06-01",
+                "to_date": "2026-06-30",
             },
             "source": "wealth-wing-data",
         },
@@ -655,28 +719,31 @@ def test_get_spending_by_category_forwards_dates_and_returns_safe_payload() -> N
     assert "secret-token" not in str(result)
 
 
-def test_get_spending_by_category_forwards_no_dates() -> None:
+def test_get_spending_by_category_requires_dates() -> None:
     client = FakeCategorySpendingWWDataClient([])
     runtime = FakeToolRuntime(
         state={"current_turn": {"filters": ResolvedFilters()}},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
-    result = _invoke_spending_by_category(runtime)
-
-    assert client.calls[0]["params"].model_dump(exclude_none=True) == {}
-    assert result["data"] == {"categories": []}
+    with pytest.raises(TypeError):
+        _invoke_spending_by_category(runtime)
+    assert client.calls == []
 
 
 def test_get_spending_by_category_rejects_invalid_filters_without_provider_call() -> None:
     client = FakeCategorySpendingWWDataClient(_category_spending_response())
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": {"params": {"from_date": "invalid"}}}},
+        state={"current_turn": {}},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
     with pytest.raises(ToolException, match="filters are invalid"):
-        _invoke_spending_by_category(runtime)
+        _invoke_spending_by_category(
+            runtime,
+            from_date="invalid",
+            to_date=date(2026, 6, 30),
+        )
     assert client.calls == []
 
 
@@ -693,7 +760,11 @@ def test_get_spending_by_category_requires_runtime_dependencies(
     )
 
     with pytest.raises(ToolException):
-        _invoke_spending_by_category(runtime)
+        _invoke_spending_by_category(
+            runtime,
+            from_date=date(2026, 6, 1),
+            to_date=date(2026, 6, 30),
+        )
 
 
 @pytest.mark.parametrize(
@@ -717,7 +788,11 @@ def test_get_spending_by_category_maps_provider_errors(
     )
 
     with pytest.raises(ToolException, match=message):
-        _invoke_spending_by_category(runtime)
+        _invoke_spending_by_category(
+            runtime,
+            from_date=date(2026, 6, 1),
+            to_date=date(2026, 6, 30),
+        )
 
 
 class FakeCashFlowWWDataClient:
@@ -735,22 +810,14 @@ class FakeCashFlowWWDataClient:
 def test_get_cash_flow_history_returns_stable_payload_and_forwards_inputs() -> None:
     client = FakeCashFlowWWDataClient(_cash_flow_response())
     runtime = FakeToolRuntime(
-        state={
-            "current_turn": {
-                "filters": ResolvedFilters(
-                    params=StandardParams(
-                        from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
-                        to_date=datetime(2026, 6, 30, tzinfo=timezone.utc),
-                    ),
-                    date_source="explicit",
-                )
-            }
-        },
+        state={"current_turn": {}},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
     result = _invoke_cash_flow(
         runtime,
+        from_date=date(2026, 6, 1),
+        to_date=date(2026, 6, 30),
         granularity="week",
         category_ids=["43581d15-1a1d-49ce-adc6-f0fe6184f18a"],
         account_ids=["f219bb47-8f12-455e-b575-e384ac524999"],
@@ -783,26 +850,43 @@ def test_get_cash_flow_history_returns_stable_payload_and_forwards_inputs() -> N
             }
         ],
     }
-    assert result["metadata"]["source"] == "wealth-wing-data"
+    assert result["metadata"] == {
+        "filters": {
+            "from_date": "2026-06-01",
+            "to_date": "2026-06-30",
+            "category_ids": ["43581d15-1a1d-49ce-adc6-f0fe6184f18a"],
+            "account_ids": ["f219bb47-8f12-455e-b575-e384ac524999"],
+            "granularity": "week",
+        },
+        "source": "wealth-wing-data",
+    }
     assert "secret-token" not in str(result)
 
 
-def test_get_cash_flow_history_rejects_partial_date_range() -> None:
+def test_get_cash_flow_history_rejects_invalid_date_range() -> None:
     client = FakeCashFlowWWDataClient(_cash_flow_response())
     runtime = FakeToolRuntime(
-        state={
-            "current_turn": {
-                "filters": ResolvedFilters(
-                    params=StandardParams(
-                        from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
-                    )
-                )
-            }
-        },
+        state={"current_turn": {}},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
     with pytest.raises(ToolException, match="filters are invalid"):
+        _invoke_cash_flow(
+            runtime,
+            from_date=date(2026, 6, 30),
+            to_date=date(2026, 6, 1),
+        )
+    assert client.calls == []
+
+
+def test_get_cash_flow_history_rejects_missing_dates() -> None:
+    client = FakeCashFlowWWDataClient(_cash_flow_response())
+    runtime = FakeToolRuntime(
+        state={"current_turn": {}},
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    with pytest.raises(TypeError):
         _invoke_cash_flow(runtime)
     assert client.calls == []
 
@@ -820,7 +904,7 @@ def test_get_cash_flow_history_maps_provider_errors(
     message: str,
 ) -> None:
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": ResolvedFilters()}},
+        state={"current_turn": {}},
         context={
             "ww_data_client": FakeCashFlowWWDataClient(provider_error),
             "access_token": "secret-token",
@@ -828,7 +912,11 @@ def test_get_cash_flow_history_maps_provider_errors(
     )
 
     with pytest.raises(ToolException, match=message):
-        _invoke_cash_flow(runtime)
+        _invoke_cash_flow(
+            runtime,
+            from_date=date(2026, 6, 1),
+            to_date=date(2026, 6, 30),
+        )
 
 
 @pytest.mark.parametrize(
@@ -839,9 +927,13 @@ def test_get_cash_flow_history_requires_runtime_dependencies(
     context: dict[str, Any],
 ) -> None:
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": ResolvedFilters()}},
+        state={"current_turn": {}},
         context=context,
     )
 
     with pytest.raises(ToolException):
-        _invoke_cash_flow(runtime)
+        _invoke_cash_flow(
+            runtime,
+            from_date=date(2026, 6, 1),
+            to_date=date(2026, 6, 30),
+        )

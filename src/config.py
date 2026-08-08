@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     def configure_logging(self) -> None:
         configure_logging(
             log_level=self.log_level,
-            json_logs=self.log_format.lower() == "json",
+            log_format=self.log_format,
         )
 
     @staticmethod

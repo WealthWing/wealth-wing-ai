@@ -50,16 +50,34 @@ class TransactionsAllResponse(BaseModel):
 
 
 class CategorySpendingParams(BaseModel):
-    from_date: datetime | None = None
-    to_date: datetime | None = None
-
-    @field_validator("from_date", "to_date")
-    @classmethod
-    def normalize_naive_datetime(cls, value: datetime | None) -> datetime | None:
-        if value is not None and value.tzinfo is None:
-            return value.replace(tzinfo=timezone.utc)
-        return value
-
+    from_date: Optional[date] = Field(
+        default=None,
+        description=(
+            "Inclusive start date for the spending range as an ISO date "
+            "(YYYY-MM-DD). Convert relative phrases such as 'last month' "
+            "or 'July 2026' before calling the tool. Do not send a time or "
+            "timezone."
+        ),
+    )
+    to_date: Optional[date] = Field(
+        default=None,
+        description=(
+            "Inclusive end date for the spending range as an ISO date "
+            "(YYYY-MM-DD). Convert relative phrases before calling the tool. "
+            "Do not send a time or timezone."
+        ),
+    )
+    category_ids: Optional[list[UUID]] = Field(
+        default=None,
+        description=(
+            "Category UUIDs explicitly provided or resolved from trusted data; "
+            "never infer UUIDs from category names."
+        ),
+    )
+    category_names: Optional[list[str]] = Field(
+        default=None,
+        description="Category names explicitly requested by the user.",
+    )
 
 class CategorySpendingResponse(BaseModel):
     category_id: UUID
@@ -68,12 +86,44 @@ class CategorySpendingResponse(BaseModel):
 
 
 class CashFlowHistoryRequest(BaseModel):
-    from_date: date
-    to_date: date
-    category_ids: list[UUID] | None = None
-    account_ids: list[UUID] | None = None
-    project_ids: list[UUID] | None = None
-    granularity: Literal["day", "week", "month"] = "month"
+    from_date: date = Field(
+        description=(
+            "Inclusive start date for the cash-flow range as an ISO date "
+            "(YYYY-MM-DD). Convert relative phrases such as 'last month' "
+            "before calling the tool."
+        ),
+    )
+    to_date: date = Field(
+        description=(
+            "Inclusive end date for the cash-flow range as an ISO date "
+            "(YYYY-MM-DD). Convert relative phrases before calling the tool."
+        ),
+    )
+    category_ids: list[UUID] | None = Field(
+        default=None,
+        description=(
+            "Category UUIDs explicitly provided or resolved from trusted data; "
+            "never infer UUIDs from category names."
+        ),
+    )
+    account_ids: list[UUID] | None = Field(
+        default=None,
+        description=(
+            "Account UUIDs explicitly provided or resolved from trusted data; "
+            "never infer UUIDs from account names."
+        ),
+    )
+    project_ids: list[UUID] | None = Field(
+        default=None,
+        description=(
+            "Project UUIDs explicitly provided or resolved from trusted data; "
+            "never infer UUIDs from project names."
+        ),
+    )
+    granularity: Literal["day", "week", "month"] = Field(
+        default="month",
+        description="Aggregation bucket size: day, week, or month.",
+    )
 
     @model_validator(mode="after")
     def validate_date_range(self) -> "CashFlowHistoryRequest":

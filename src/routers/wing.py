@@ -69,7 +69,7 @@ def _response_from_current_turn(
     turn_id = current_turn.get("turn_id")
     if not isinstance(turn_id, str) or not turn_id:
         turn_id = "unknown"
-
+    print(f"current_turn: {current_turn}")
     error = _public_error(current_turn)
     answer = current_turn.get("final_answer")
     if not isinstance(answer, str) or not answer:

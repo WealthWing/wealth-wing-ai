@@ -1,7 +1,9 @@
 import asyncio
+from typing import cast
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from jwt import PyJWKClient
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -140,7 +142,7 @@ def test_auth_middleware_keeps_validated_token_in_request_state(monkeypatch):
             assert token == "secret-token"
             return FakeSigningKey()
 
-    middleware.jwks_client = FakeJwksClient()
+    middleware.jwks_client = cast(PyJWKClient, FakeJwksClient())
     monkeypatch.setattr(
         "src.middleware.auth.decode",
         lambda *args, **kwargs: {"sub": "user-id"},
@@ -176,7 +178,8 @@ def test_lifespan_builds_shared_ww_data_client():
     )
 
     with TestClient(create_app(settings)) as client:
-        assert isinstance(client.app.state.ww_data_client, WWDataClient)
+        app = cast(FastAPI, client.app)
+        assert isinstance(app.state.ww_data_client, WWDataClient)
 
 
 def test_docs_are_disabled_by_default():

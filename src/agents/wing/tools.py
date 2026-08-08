@@ -8,7 +8,7 @@ from uuid import UUID
 from langchain_core.tools import BaseTool, ToolException
 from langchain_core.tools import tool  # pyright: ignore[reportUnknownVariableType]
 from langgraph.prebuilt import ToolRuntime
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ValidationError
 from src.providers.ww_data_client import (
     WWDataAuthorizationError,
     WWDataClientError,
@@ -35,36 +35,29 @@ from src.agents.wing.state import (
     WingGraphState,
     WingRuntimeContext,
 )
-from src.agents.wing.tool_schemas import GetTransactionsInput
+from src.agents.wing.tool_schemas import (
+    GetCashFlowHistoryInput,
+    GetSpendingByCategoryInput,
+    GetTransactionsInput,
+)
 
 
-
-
-
-class TransactionsByCategory(BaseModel):
-    category: str = Field(description="The category of the transactions.")
-    total_amount: float = Field(description="The total amount for the category.")
-    transactions: list[dict[str, Any]] = Field(
-        description="The list of transactions for the category."
-    )
-
-
-@tool
+@tool(args_schema=GetSpendingByCategoryInput)
 async def get_spending_by_category(
-    text: str,
     runtime: ToolRuntime[WingRuntimeContext, WingGraphState],
+    from_date: date,
+    to_date: date,
+    category_ids: list[UUID] | None = None,
+    category_names: list[str] | None = None,
 ) -> ToolResultPayload:
-    """Return expense totals grouped by category for the resolved date range."""
-    del text
-    filters = runtime.state.get("current_turn", {}).get("filters", {})
-    try:
-        resolved_filters = _coerce_resolved_filters(filters)
-        params = CategorySpendingParams(
-            from_date=resolved_filters.params.from_date,
-            to_date=resolved_filters.params.to_date,
-        )
-    except (TypeError, ValueError, ValidationError) as exc:
-        raise ToolException("Spending request filters are invalid.") from exc
+    """Use this tool for spending breakdowns or comparisons by category.
+
+    Returns aggregate expense totals per category for the requested date range.
+    Optionally filter by explicit category names or trusted category UUIDs.
+
+    Do not use this tool to retrieve individual transactions, transaction summaries,
+    income, refunds, or net cash flow. Never infer category UUIDs from names.
+    """
 
     ww_data_client = runtime.context.get("ww_data_client")
     access_token = runtime.context.get("access_token")
@@ -72,6 +65,16 @@ async def get_spending_by_category(
         raise ToolException("Spending data service is not configured.")
     if not access_token:
         raise ToolException("Spending data authorization is unavailable.")
+
+    try:
+        params = CategorySpendingParams(
+            from_date=from_date,
+            to_date=to_date,
+            category_ids=category_ids,
+            category_names=category_names,
+        )
+    except ValidationError as exc:
+        raise ToolException("Spending request filters are invalid.") from exc
 
     try:
         categories = await ww_data_client.get_spending_by_category(
@@ -260,25 +263,24 @@ async def get_transactions(
     )
 
 
-@tool
+@tool(args_schema=GetCashFlowHistoryInput)
 async def get_cash_flow_history(
-    text: str,
     runtime: ToolRuntime[WingRuntimeContext, WingGraphState],
-    granularity: Literal["day", "week", "month"] = "month",
+    from_date: date,
+    to_date: date,
     category_ids: list[UUID] | None = None,
     account_ids: list[UUID] | None = None,
     project_ids: list[UUID] | None = None,
+    granularity: Literal["day", "week", "month"] = "month",
 ) -> ToolResultPayload:
     """Return income, expenses, refunds, and net cash flow for a date range.
 
-    Use granularity day, week, or month. UUID filters may only be supplied when
-    they are known; do not infer IDs from category, account, or project names.
+    Always supply concrete from_date and to_date as ISO dates. Convert relative
+    phrases such as "last month" before calling. Use granularity day, week, or
+    month. UUID filters may only be supplied when they are known; do not infer
+    IDs from category, account, or project names.
     """
-    del text
-    filters = runtime.state.get("current_turn", {}).get("filters", {})
     try:
-        resolved_filters = _coerce_resolved_filters(filters)
-        from_date, to_date = _cash_flow_date_range(resolved_filters)
         request = CashFlowHistoryRequest(
             from_date=from_date,
             to_date=to_date,
@@ -330,7 +332,7 @@ async def get_cash_flow_history(
             ],
         },
         metadata={
-            "filters": _serialize_tool_metadata(resolved_filters),
+            "filters": request.model_dump(mode="json", exclude_none=True),
             "source": "wealth-wing-data",
         },
         ui="cash_flow_history",
@@ -421,16 +423,3 @@ def _serialize_transaction(transaction: TransactionResponse) -> dict[str, Any]:
         },
         "account": account,
     }
-
-
-#def _search_from_filters(filters: Any) -> str | None:
-#    if isinstance(filters, ResolvedFilters):
-#        return filters.params.search
-#
-#    if isinstance(filters, dict):
-#        params = filters.get("params", {})
-#        if isinstance(params, dict):
-#            search = params.get("search")
-#            return search if isinstance(search, str) and search else None
-#
-#    return None

@@ -88,13 +88,13 @@ class WWDataClient:
         access_token: str,
         params: CategorySpendingParams,
     ) -> list[CategorySpendingResponse]:
-        payload = params.model_dump(mode="json", exclude_none=True)
+        query_params = params.model_dump(mode="json", exclude_none=True)
         headers = {"Authorization": f"Bearer {access_token}"}
 
         try:
             response = await self._http_client.post(
                 f"{self._base_url}/category/spending_by_category",
-                json=payload,
+                params=query_params,
                 headers=headers,
             )
             response.raise_for_status()

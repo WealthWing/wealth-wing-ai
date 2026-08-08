@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import date, datetime, timezone
 from uuid import UUID
 
@@ -228,7 +227,7 @@ def _category_spending_payload() -> list[dict[str, object]]:
     ]
 
 
-def test_get_spending_by_category_forwards_auth_and_json_body() -> None:
+def test_get_spending_by_category_forwards_auth_and_query_parameters() -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -245,6 +244,8 @@ def test_get_spending_by_category_forwards_auth_and_json_body() -> None:
                 params=CategorySpendingParams(
                     from_date=date(2026, 6, 1),
                     to_date=date(2026, 6, 30),
+                    category_ids=[UUID(CATEGORY_ID)],
+                    category_names=["Groceries", "Dining"],
                 ),
             )
 
@@ -256,14 +257,18 @@ def test_get_spending_by_category_forwards_auth_and_json_body() -> None:
     request = captured["request"]
     assert isinstance(request, httpx.Request)
     assert request.method == "POST"
-    assert str(request.url) == (
+    assert str(request.url.copy_with(query=None)) == (
         "https://data.example.test/category/spending_by_category"
     )
     assert request.headers["Authorization"] == "Bearer secret-token"
-    assert json.loads(request.content) == {
-        "from_date": "2026-06-01",
-        "to_date": "2026-06-30",
-    }
+    assert list(request.url.params.multi_items()) == [
+        ("from_date", "2026-06-01"),
+        ("to_date", "2026-06-30"),
+        ("category_ids", CATEGORY_ID),
+        ("category_names", "Groceries"),
+        ("category_names", "Dining"),
+    ]
+    assert request.content == b""
 
 
 def test_get_spending_by_category_omits_empty_date_bounds() -> None:
@@ -289,7 +294,10 @@ def test_get_spending_by_category_omits_empty_date_bounds() -> None:
 
     request = captured["request"]
     assert isinstance(request, httpx.Request)
-    assert json.loads(request.content) == {}
+    assert str(request.url) == (
+        "https://data.example.test/category/spending_by_category"
+    )
+    assert request.content == b""
 
 
 @pytest.mark.parametrize(

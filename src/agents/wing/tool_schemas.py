@@ -8,16 +8,50 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.agents.wing.state import WingGraphState, WingRuntimeContext
 from src.providers.ww_data_schemas import (
+    AccountTypeEnum,
     CashFlowHistoryRequest,
     TransactionsAllRequest,
+    TransactionsQueryParams,
 )
 
 
-class GetTransactionsInput(TransactionsAllRequest):
-    """Model-visible transaction filters plus graph-injected runtime context."""
+class GetTransactionsInput(TransactionsQueryParams, TransactionsAllRequest):
+    """All model-visible transaction filters plus injected runtime context."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
+    runtime: ToolRuntime[WingRuntimeContext, WingGraphState]
+
+
+class GetTransactionsSummaryInput(BaseModel):
+    """Model-visible transaction-summary filters plus injected runtime context."""
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    from_date: date | None = Field(
+        default=None,
+        description=(
+            "Inclusive start date for an explicitly requested summary period. "
+            "Convert relative dates before calling; omit both dates to summarize "
+            "the last completed month."
+        ),
+    )
+    to_date: date | None = Field(
+        default=None,
+        description=(
+            "Inclusive end date for an explicitly requested summary period. "
+            "Convert relative dates before calling; omit both dates to summarize "
+            "the last completed month."
+        ),
+    )
+    account_types: list[AccountTypeEnum] | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Account types explicitly requested by the user. Omit to use checking "
+            "and credit-card accounts."
+        ),
+    )
     runtime: ToolRuntime[WingRuntimeContext, WingGraphState]
 
 

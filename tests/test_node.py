@@ -460,22 +460,17 @@ def test_collect_results_accepts_transaction_summary_toolnode_payload() -> None:
                         tool_calls=[
                             {
                                 "name": "get_transactions_summary",
-                                "args": {"text": "summarize June"},
+                                "args": {
+                                    "from_date": "2026-06-01",
+                                    "to_date": "2026-06-30",
+                                },
                                 "id": "call-1",
                                 "type": "tool_call",
                             }
                         ],
                     )
                 ],
-                "current_turn": {
-                    "filters": ResolvedFilters(
-                        params=StandardParams(
-                            from_date=datetime(2026, 6, 1),
-                            to_date=datetime(2026, 6, 30),
-                        ),
-                        date_source="explicit",
-                    )
-                },
+                "current_turn": {},
             },
             context=cast(
                 WingRuntimeContext,

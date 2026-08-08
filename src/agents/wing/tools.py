@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
 from langchain_core.tools import BaseTool, ToolException
 from langchain_core.tools import tool  # pyright: ignore[reportUnknownVariableType]
 from langgraph.prebuilt import ToolRuntime
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 from src.providers.ww_data_client import (
     WWDataAuthorizationError,
     WWDataClientError,
@@ -30,7 +30,6 @@ if __package__ in {None, ""}:
 
 from src.agents.wing.state import (
     ProfileId,
-    ResolvedFilters,
     ToolResultPayload,
     WingGraphState,
     WingRuntimeContext,
@@ -39,6 +38,7 @@ from src.agents.wing.tool_schemas import (
     GetCashFlowHistoryInput,
     GetSpendingByCategoryInput,
     GetTransactionsInput,
+    GetTransactionsSummaryInput,
 )
 
 
@@ -108,26 +108,35 @@ async def get_spending_by_category(
     )
 
 
-@tool
+@tool(args_schema=GetTransactionsSummaryInput)
 async def get_transactions_summary(
-    text: str,
     runtime: ToolRuntime[WingRuntimeContext, WingGraphState],
+    from_date: date | None = None,
+    to_date: date | None = None,
+    account_types: list[AccountTypeEnum] | None = None,
 ) -> ToolResultPayload:
-    """Return a transaction summary for the resolved date range."""
-    del text
-    filters = runtime.state.get("current_turn", {}).get("filters", {})
+    """Return a transaction summary for the model-supplied filters.
+
+    Convert explicitly requested periods into concrete dates before calling.
+    Omit both dates to summarize the last completed month. Supply account types
+    only when the user explicitly requests them.
+    """
     try:
-        resolved_filters = _coerce_resolved_filters(filters)
-        if resolved_filters.params.filter_by or resolved_filters.params.search:
-            raise ToolException(
-                "Filtered transaction summaries are not supported by the data "
-                "service yet."
-            )
-        from_date, to_date = _cash_flow_date_range(resolved_filters)
-        query = TransactionSummaryRequest(
-            from_date=from_date,
-            to_date=to_date,
+        resolved_from_date, resolved_to_date = _transaction_summary_date_range(
+            from_date,
+            to_date,
         )
+        if account_types is None:
+            query = TransactionSummaryRequest(
+                from_date=resolved_from_date,
+                to_date=resolved_to_date,
+            )
+        else:
+            query = TransactionSummaryRequest(
+                from_date=resolved_from_date,
+                to_date=resolved_to_date,
+                account_types=account_types,
+            )
     except (TypeError, ValueError, ValidationError) as exc:
         raise ToolException("Transaction summary request filters are invalid.") from exc
 
@@ -155,7 +164,7 @@ async def get_transactions_summary(
         result_type="transaction_summary",
         data=summary_response.model_dump(mode="json"),
         metadata={
-            "filters": _serialize_tool_metadata(resolved_filters),
+            "filters": query.model_dump(mode="json"),
             "source": "wealth-wing-data",
         },
         ui="transactions_summary_ui",
@@ -165,6 +174,13 @@ async def get_transactions_summary(
 @tool(args_schema=GetTransactionsInput)
 async def get_transactions(
     runtime: ToolRuntime[WingRuntimeContext, WingGraphState],
+    page: int = 1,
+    page_size: int = 30,
+    sort_by: Literal["amount", "date", "title"] | None = None,
+    sort_order: Literal["asc", "desc"] = "desc",
+    search: str | None = None,
+    from_date: datetime | None = None,
+    to_date: datetime | None = None,
     category_ids: list[UUID] | None = None,
     category_names: list[str] | None = None,
     account_ids: list[UUID] | None = None,
@@ -175,16 +191,25 @@ async def get_transactions(
     maximum_amount_cents: int | None = None,
     account_type: AccountTypeEnum | None = None,
 ) -> ToolResultPayload:
-    """Return transactions matching shared query and endpoint-specific filters.
+    """Return transactions matching the model-supplied filters.
 
     Supply only filters explicitly requested by the user. Category and account
     names belong in the name fields. UUID fields may only contain identifiers
     explicitly provided by the user or obtained from trusted application data.
-    Amount bounds are non-negative magnitudes expressed in cents.
+    Convert relative dates into concrete datetimes before calling; omit dates
+    when the user did not request a period. Amount bounds are non-negative
+    magnitudes expressed in cents.
     """
-    filters = runtime.state.get("current_turn", {}).get("filters", {})
     try:
-        resolved_filters = _coerce_resolved_filters(filters)
+        query = TransactionsQueryParams(
+            page=page,
+            page_size=page_size,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            search=search,
+            from_date=from_date,
+            to_date=to_date,
+        )
         transaction_filters = TransactionsAllRequest(
             category_ids=category_ids,
             category_names=category_names,
@@ -199,29 +224,12 @@ async def get_transactions(
     except (TypeError, ValueError, ValidationError) as exc:
         raise ToolException("Transaction request filters are invalid.") from exc
 
-    if resolved_filters.params.filter_by:
-        raise ToolException(
-            "Legacy global transaction filters are not supported; use the "
-            "transaction tool filters."
-        )
-
     ww_data_client = runtime.context.get("ww_data_client")
     access_token = runtime.context.get("access_token")
     if ww_data_client is None:
         raise ToolException("Transaction data service is not configured.")
     if not access_token:
         raise ToolException("Transaction data authorization is unavailable.")
-
-    params = resolved_filters.params
-    query = TransactionsQueryParams(
-        page=params.page,
-        page_size=params.page_size,
-        sort_by=params.sort_by,
-        sort_order=params.sort_order,
-        search=params.search,
-        from_date=params.from_date,
-        to_date=params.to_date,
-    )
 
     try:
         response = await ww_data_client.get_transactions(
@@ -243,19 +251,16 @@ async def get_transactions(
                 _serialize_transaction(transaction)
                 for transaction in response.transactions
             ],
-            "page": params.page,
-            "page_size": params.page_size,
+            "page": query.page,
+            "page_size": query.page_size,
             "total_count": response.total_count,
             "total_pages": response.total_pages,
             "has_more": response.has_more,
         },
         metadata={
             "filters": {
-                **_serialize_tool_metadata(resolved_filters),
-                "transaction_filters": transaction_filters.model_dump(
-                    mode="json",
-                    exclude_none=True,
-                ),
+                **query.model_dump(mode="json", exclude_none=True),
+                **transaction_filters.model_dump(mode="json", exclude_none=True),
             },
             "source": "wealth-wing-data",
         },
@@ -360,39 +365,15 @@ def _tool_result(
     }
 
 
-def _serialize_tool_metadata(value: object) -> Any:
-    if isinstance(value, BaseModel):
-        return value.model_dump(mode="json")
+def _transaction_summary_date_range(
+    from_date: date | None,
+    to_date: date | None,
+) -> tuple[date, date]:
+    if from_date is not None and to_date is not None:
+        return from_date, to_date
 
-    if isinstance(value, dict):
-        mapping = cast(dict[object, object], value)
-        return {
-            key: _serialize_tool_metadata(item) for key, item in mapping.items()
-        }
-
-    if isinstance(value, (list, tuple)):
-        sequence = cast(list[object] | tuple[object, ...], value)
-        return [_serialize_tool_metadata(item) for item in sequence]
-
-    return value
-
-
-def _coerce_resolved_filters(value: Any) -> ResolvedFilters:
-    if isinstance(value, ResolvedFilters):
-        return value
-    if isinstance(value, dict):
-        return ResolvedFilters.model_validate(value)
-    return ResolvedFilters()
-
-
-def _cash_flow_date_range(filters: ResolvedFilters) -> tuple[date, date]:
-    from_datetime = filters.params.from_date
-    to_datetime = filters.params.to_date
-    if from_datetime is not None and to_datetime is not None:
-        return from_datetime.date(), to_datetime.date()
-
-    if from_datetime is not None or to_datetime is not None:
-        raise ValueError("cash-flow queries require both from_date and to_date")
+    if from_date is not None or to_date is not None:
+        raise ValueError("transaction summaries require both from_date and to_date")
 
     today = datetime.now(timezone.utc).date()
     current_month_start = today.replace(day=1)

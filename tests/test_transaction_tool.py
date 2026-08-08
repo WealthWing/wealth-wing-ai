@@ -98,11 +98,14 @@ def _invoke_spending_by_category(
     )
 
 
-def _invoke_transaction_summary(runtime: FakeToolRuntime) -> dict[str, Any]:
+def _invoke_transaction_summary(
+    runtime: FakeToolRuntime,
+    **kwargs: Any,
+) -> dict[str, Any]:
     return asyncio.run(
         _tool_coroutine(get_transactions_summary)(
-            text="summarize my transactions",
             runtime=runtime,
+            **kwargs,
         )
     )
 
@@ -195,19 +198,28 @@ class FakeTransactionSummaryWWDataClient:
 
 def test_get_transactions_summary_returns_stable_payload_and_forwards_dates() -> None:
     client = FakeTransactionSummaryWWDataClient(_transaction_summary_response())
-    filters = ResolvedFilters(
+    stale_filters = ResolvedFilters(
         params=StandardParams(
-            from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
-            to_date=datetime(2026, 6, 30, tzinfo=timezone.utc),
+            from_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            to_date=datetime(2025, 1, 2, tzinfo=timezone.utc),
         ),
         date_source="explicit",
     )
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": filters}},
+        state={"current_turn": {"filters": stale_filters}},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
-    result = _invoke_transaction_summary(runtime)
+    result = _invoke_transaction_summary(
+        runtime,
+        from_date=date(2026, 6, 1),
+        to_date=date(2026, 6, 30),
+        account_types=[
+            AccountTypeEnum.CHECKING,
+            AccountTypeEnum.CREDIT_CARD,
+            AccountTypeEnum.CHECKING,
+        ],
+    )
 
     assert client.calls[0]["access_token"] == "secret-token"
     assert client.calls[0]["request"].model_dump(mode="json") == {
@@ -233,7 +245,11 @@ def test_get_transactions_summary_returns_stable_payload_and_forwards_dates() ->
             "included_account_types": ["CHECKING", "CREDIT_CARD"],
         },
         "metadata": {
-            "filters": filters.model_dump(mode="json"),
+            "filters": {
+                "from_date": "2026-06-01",
+                "to_date": "2026-06-30",
+                "account_types": ["CHECKING", "CREDIT_CARD"],
+            },
             "source": "wealth-wing-data",
         },
         "ui": "transactions_summary_ui",
@@ -308,11 +324,11 @@ def test_get_transactions_summary_rejects_partial_date_range() -> None:
     )
 
     with pytest.raises(ToolException, match="filters are invalid"):
-        _invoke_transaction_summary(runtime)
+        _invoke_transaction_summary(runtime, from_date=date(2026, 6, 1))
     assert client.calls == []
 
 
-def test_get_transactions_summary_rejects_unsupported_filters() -> None:
+def test_get_transactions_summary_ignores_resolved_filters() -> None:
     client = FakeTransactionSummaryWWDataClient(_transaction_summary_response())
     runtime = FakeToolRuntime(
         state={
@@ -332,9 +348,31 @@ def test_get_transactions_summary_rejects_unsupported_filters() -> None:
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
-    with pytest.raises(ToolException, match="not supported"):
-        _invoke_transaction_summary(runtime)
-    assert client.calls == []
+    _invoke_transaction_summary(
+        runtime,
+        from_date=date(2026, 6, 1),
+        to_date=date(2026, 6, 30),
+    )
+
+    assert len(client.calls) == 1
+    assert client.calls[0]["request"].from_date == date(2026, 6, 1)
+    assert client.calls[0]["request"].to_date == date(2026, 6, 30)
+
+
+def test_get_transactions_summary_exposes_filters_to_the_model() -> None:
+    schema_type = cast(BaseTool, get_transactions_summary).tool_call_schema
+    assert not isinstance(schema_type, dict)
+    schema = schema_type.model_json_schema()
+
+    assert set(schema["properties"]) == {
+        "from_date",
+        "to_date",
+        "account_types",
+    }
+    assert "runtime" not in schema["properties"]
+    assert "last completed month" in schema["properties"]["from_date"][
+        "description"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -386,25 +424,31 @@ def test_get_transactions_summary_maps_provider_errors(
 
 def test_get_transactions_returns_stable_payload_and_forwards_filters() -> None:
     client = FakeWWDataClient(_provider_response())
-    filters = ResolvedFilters(
+    stale_filters = ResolvedFilters(
         params=StandardParams(
-            page=2,
-            page_size=20,
-            sort_by="date",
-            sort_order="asc",
-            search="ShopRite",
-            from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
-            to_date=datetime(2026, 6, 30, tzinfo=timezone.utc),
+            page=99,
+            page_size=1,
+            sort_by="title",
+            search="stale resolved search",
+            from_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
+            to_date=datetime(2025, 1, 2, tzinfo=timezone.utc),
         ),
         date_source="explicit",
     )
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": filters}},
+        state={"current_turn": {"filters": stale_filters}},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
     result = _invoke(
         runtime,
+        page=2,
+        page_size=20,
+        sort_by="date",
+        sort_order="asc",
+        search="ShopRite",
+        from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        to_date=datetime(2026, 6, 30, tzinfo=timezone.utc),
         category_ids=[UUID("43581d15-1a1d-49ce-adc6-f0fe6184f18a")],
         category_names=["Groceries", "Dining"],
         account_ids=[UUID("f219bb47-8f12-455e-b575-e384ac524999")],
@@ -466,6 +510,24 @@ def test_get_transactions_returns_stable_payload_and_forwards_filters() -> None:
         "has_more": True,
     }
     assert result["metadata"]["source"] == "wealth-wing-data"
+    assert result["metadata"]["filters"] == {
+        "page": 2,
+        "page_size": 20,
+        "sort_by": "date",
+        "sort_order": "asc",
+        "search": "ShopRite",
+        "from_date": "2026-06-01T00:00:00Z",
+        "to_date": "2026-06-30T00:00:00Z",
+        "category_ids": ["43581d15-1a1d-49ce-adc6-f0fe6184f18a"],
+        "category_names": ["Groceries", "Dining"],
+        "account_ids": ["f219bb47-8f12-455e-b575-e384ac524999"],
+        "account_names": ["Chase Checking"],
+        "merchant_search": "ShopRite",
+        "transaction_types": ["expense", "refund"],
+        "minimum_amount_cents": 5000,
+        "maximum_amount_cents": 10000,
+        "account_type": "CHECKING",
+    }
     assert "secret-token" not in str(result)
 
 
@@ -486,6 +548,11 @@ def test_toolnode_injects_state_and_runtime_context() -> None:
                             {
                                 "name": "get_transactions",
                                 "args": {
+                                    "page": 3,
+                                    "sort_by": "date",
+                                    "search": "weekly",
+                                    "from_date": "2026-06-01T00:00:00Z",
+                                    "to_date": "2026-06-30T23:59:59Z",
                                     "category_names": ["Groceries"],
                                     "minimum_amount_cents": 5000,
                                 },
@@ -511,13 +578,22 @@ def test_toolnode_injects_state_and_runtime_context() -> None:
     assert isinstance(tool_message, ToolMessage)
     assert tool_message.status == "success"
     assert client.calls[0]["access_token"] == "secret-token"
+    assert client.calls[0]["params"].model_dump(mode="json") == {
+        "page": 3,
+        "page_size": 20,
+        "sort_by": "date",
+        "sort_order": "desc",
+        "search": "weekly",
+        "from_date": "2026-06-01T00:00:00Z",
+        "to_date": "2026-06-30T23:59:59Z",
+    }
     assert client.calls[0]["transaction_filters"].category_names == [
         "Groceries"
     ]
     assert client.calls[0]["transaction_filters"].minimum_amount_cents == 5000
 
 
-def test_get_transactions_exposes_only_endpoint_filters_to_the_model() -> None:
+def test_get_transactions_exposes_all_filters_to_the_model() -> None:
     schema_type = cast(BaseTool, get_transactions).tool_call_schema
     assert not isinstance(schema_type, dict)
     schema = schema_type.model_json_schema()
@@ -532,7 +608,18 @@ def test_get_transactions_exposes_only_endpoint_filters_to_the_model() -> None:
         "minimum_amount_cents",
         "maximum_amount_cents",
         "account_type",
+        "page",
+        "page_size",
+        "sort_by",
+        "sort_order",
+        "search",
+        "from_date",
+        "to_date",
     }
+    assert "runtime" not in schema["properties"]
+    assert "omit when not requested" in schema["properties"]["from_date"][
+        "description"
+    ]
 
 
 def test_get_transactions_rejects_invalid_amount_range_without_provider_call() -> None:
@@ -551,7 +638,19 @@ def test_get_transactions_rejects_invalid_amount_range_without_provider_call() -
     assert client.calls == []
 
 
-def test_get_transactions_rejects_unsupported_filters_without_calling_provider() -> None:
+def test_get_transactions_rejects_invalid_pagination_without_provider_call() -> None:
+    client = FakeWWDataClient(_provider_response())
+    runtime = FakeToolRuntime(
+        state={"current_turn": {}},
+        context={"ww_data_client": client, "access_token": "secret-token"},
+    )
+
+    with pytest.raises(ToolException, match="filters are invalid"):
+        _invoke(runtime, page=0)
+    assert client.calls == []
+
+
+def test_get_transactions_ignores_resolved_filters() -> None:
     client = FakeWWDataClient(_provider_response())
     runtime = FakeToolRuntime(
         state={
@@ -571,9 +670,31 @@ def test_get_transactions_rejects_unsupported_filters_without_calling_provider()
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
-    with pytest.raises(ToolException, match="not supported"):
-        _invoke(runtime)
-    assert client.calls == []
+    result = _invoke(runtime)
+
+    assert len(client.calls) == 1
+    assert client.calls[0]["params"].model_dump() == {
+        "page": 1,
+        "page_size": 30,
+        "sort_by": None,
+        "sort_order": "desc",
+        "search": None,
+        "from_date": None,
+        "to_date": None,
+    }
+    assert client.calls[0]["transaction_filters"].model_dump() == {
+        "category_ids": None,
+        "category_names": None,
+        "account_ids": None,
+        "account_names": None,
+        "merchant_search": None,
+        "transaction_types": None,
+        "minimum_amount_cents": None,
+        "maximum_amount_cents": None,
+        "account_type": None,
+    }
+    assert "from_date" not in result["metadata"]["filters"]
+    assert "to_date" not in result["metadata"]["filters"]
 
 
 @pytest.mark.parametrize(

@@ -7,13 +7,43 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class TransactionsQueryParams(BaseModel):
-    page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=20, ge=1)
-    sort_by: Literal["amount", "date", "title"] | None = None
-    sort_order: Literal["asc", "desc"] = "desc"
-    search: str | None = None
-    from_date: datetime | None = None
-    to_date: datetime | None = None
+    page: int = Field(
+        default=1,
+        ge=1,
+        description="One-based result page explicitly requested by the user.",
+    )
+    page_size: int = Field(
+        default=20,
+        ge=1,
+        description="Number of transactions to return per page.",
+    )
+    sort_by: Literal["amount", "date", "title"] | None = Field(
+        default=None,
+        description="Transaction field explicitly requested for sorting.",
+    )
+    sort_order: Literal["asc", "desc"] = Field(
+        default="desc",
+        description="Sort direction; defaults to descending.",
+    )
+    search: str | None = Field(
+        default=None,
+        description="General transaction description text requested by the user.",
+    )
+    from_date: datetime | None = Field(
+        default=None,
+        description=(
+            "Inclusive start datetime for an explicitly requested period. "
+            "Convert relative dates before calling and omit when not requested."
+        ),
+    )
+    to_date: datetime | None = Field(
+        default=None,
+        description=(
+            "Inclusive end datetime for an explicitly requested period. "
+            "Convert relative dates before calling and omit when not requested."
+        ),
+    )
+
 
 class TransactionBase(BaseModel):
     category_id: UUID

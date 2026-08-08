@@ -280,10 +280,11 @@ async def get_cash_flow_history(
 ) -> ToolResultPayload:
     """Return income, expenses, refunds, and net cash flow for a date range.
 
-    Always supply concrete from_date and to_date as ISO dates. Convert relative
-    phrases such as "last month" before calling. Use granularity day, week, or
-    month. UUID filters may only be supplied when they are known; do not infer
-    IDs from category, account, or project names.
+    Always supply concrete from_date and to_date as ISO dates. Resolve relative
+    and yearless periods from the authoritative current date in the system
+    prompt; a quarter without a year belongs to the current calendar year. Use
+    granularity day, week, or month. UUID filters may only be supplied when they
+    are known; do not infer IDs from category, account, or project names.
     """
     try:
         request = CashFlowHistoryRequest(

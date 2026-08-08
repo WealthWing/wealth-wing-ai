@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
+
 from src.agents.wing.configuration import WingAgentConfiguration
 
 
@@ -27,10 +29,33 @@ SYSTEM_PROMPTS = {
 }
 
 
-def get_system_prompt(configuration: WingAgentConfiguration) -> str:
-    return SYSTEM_PROMPTS.get(
+def get_system_prompt(
+    configuration: WingAgentConfiguration,
+    *,
+    current_date: date | None = None,
+    timezone_name: str = "UTC",
+) -> str:
+    base_prompt = SYSTEM_PROMPTS.get(
         configuration.system_prompt_name,
         DEFAULT_SYSTEM_PROMPT,
     )
+    resolved_current_date = current_date or datetime.now(timezone.utc).date()
 
+    return f"""
+{base_prompt.strip()}
+
+Date context:
+- Current date: {resolved_current_date.isoformat()}
+- Date-resolution timezone: {timezone_name}
+- Treat this runtime date as authoritative; do not infer the current year from
+  training knowledge or examples.
+- Resolve relative and yearless periods into concrete dates before calling a
+  tool.
+- When a quarter is given without a year, use the current calendar year unless
+  the user or conversation explicitly establishes another year.
+- The first quarter is January 1 through March 31, the second is April 1 through
+  June 30, the third is July 1 through September 30, and the fourth is October 1
+  through December 31.
+- Send absolute ISO dates to tools.
+""".strip()
 

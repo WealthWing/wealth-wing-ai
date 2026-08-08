@@ -33,14 +33,20 @@ class TransactionsQueryParams(BaseModel):
         default=None,
         description=(
             "Inclusive start datetime for an explicitly requested period. "
-            "Convert relative dates before calling and omit when not requested."
+            "Resolve relative or yearless periods from the authoritative current "
+            "date in the system prompt; a quarter without a year belongs to the "
+            "current calendar year. Convert before calling and omit when not "
+            "requested."
         ),
     )
     to_date: datetime | None = Field(
         default=None,
         description=(
             "Inclusive end datetime for an explicitly requested period. "
-            "Convert relative dates before calling and omit when not requested."
+            "Resolve relative or yearless periods from the authoritative current "
+            "date in the system prompt; a quarter without a year belongs to the "
+            "current calendar year. Convert before calling and omit when not "
+            "requested."
         ),
     )
 
@@ -85,16 +91,19 @@ class CategorySpendingParams(BaseModel):
         description=(
             "Inclusive start date for the spending range as an ISO date "
             "(YYYY-MM-DD). Convert relative phrases such as 'last month' "
-            "or 'July 2026' before calling the tool. Do not send a time or "
-            "timezone."
+            "or yearless periods using the authoritative current date in the "
+            "system prompt. A quarter without a year belongs to the current "
+            "calendar year. Do not send a time or timezone."
         ),
     )
     to_date: Optional[date] = Field(
         default=None,
         description=(
             "Inclusive end date for the spending range as an ISO date "
-            "(YYYY-MM-DD). Convert relative phrases before calling the tool. "
-            "Do not send a time or timezone."
+            "(YYYY-MM-DD). Resolve relative or yearless periods using the "
+            "authoritative current date in the system prompt. A quarter without "
+            "a year belongs to the current calendar year. Do not send a time or "
+            "timezone."
         ),
     )
     category_ids: Optional[list[UUID]] = Field(
@@ -119,14 +128,17 @@ class CashFlowHistoryRequest(BaseModel):
     from_date: date = Field(
         description=(
             "Inclusive start date for the cash-flow range as an ISO date "
-            "(YYYY-MM-DD). Convert relative phrases such as 'last month' "
-            "before calling the tool."
+            "(YYYY-MM-DD). Resolve relative or yearless periods using the "
+            "authoritative current date in the system prompt. A quarter without "
+            "a year belongs to the current calendar year."
         ),
     )
     to_date: date = Field(
         description=(
             "Inclusive end date for the cash-flow range as an ISO date "
-            "(YYYY-MM-DD). Convert relative phrases before calling the tool."
+            "(YYYY-MM-DD). Resolve relative or yearless periods using the "
+            "authoritative current date in the system prompt. A quarter without "
+            "a year belongs to the current calendar year."
         ),
     )
     category_ids: list[UUID] | None = Field(

@@ -32,16 +32,20 @@ class GetTransactionsSummaryInput(BaseModel):
         default=None,
         description=(
             "Inclusive start date for an explicitly requested summary period. "
-            "Convert relative dates before calling; omit both dates to summarize "
-            "the last completed month."
+            "Resolve relative or yearless periods from the authoritative current "
+            "date in the system prompt; a quarter without a year belongs to the "
+            "current calendar year. Omit both dates to summarize the last "
+            "completed month."
         ),
     )
     to_date: date | None = Field(
         default=None,
         description=(
             "Inclusive end date for an explicitly requested summary period. "
-            "Convert relative dates before calling; omit both dates to summarize "
-            "the last completed month."
+            "Resolve relative or yearless periods from the authoritative current "
+            "date in the system prompt; a quarter without a year belongs to the "
+            "current calendar year. Omit both dates to summarize the last "
+            "completed month."
         ),
     )
     account_types: list[AccountTypeEnum] | None = Field(
@@ -69,10 +73,20 @@ class GetSpendingByCategoryInput(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     from_date: date = Field(
-        description="Inclusive start date for the spending range (YYYY-MM-DD).",
+        description=(
+            "Inclusive start date for the spending range (YYYY-MM-DD). Resolve "
+            "relative or yearless periods from the authoritative current date in "
+            "the system prompt; a quarter without a year belongs to the current "
+            "calendar year."
+        ),
     )
     to_date: date = Field(
-        description="Inclusive end date for the spending range (YYYY-MM-DD).",
+        description=(
+            "Inclusive end date for the spending range (YYYY-MM-DD). Resolve "
+            "relative or yearless periods from the authoritative current date in "
+            "the system prompt; a quarter without a year belongs to the current "
+            "calendar year."
+        ),
     )
     category_ids: list[UUID] | None = Field(
         default=None,

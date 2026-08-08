@@ -373,6 +373,9 @@ def test_get_transactions_summary_exposes_filters_to_the_model() -> None:
     assert "last completed month" in schema["properties"]["from_date"][
         "description"
     ]
+    assert "quarter without a year" in schema["properties"]["from_date"][
+        "description"
+    ]
 
 
 @pytest.mark.parametrize(
@@ -620,6 +623,9 @@ def test_get_transactions_exposes_all_filters_to_the_model() -> None:
     assert "omit when not requested" in schema["properties"]["from_date"][
         "description"
     ]
+    assert "quarter without a year" in schema["properties"]["from_date"][
+        "description"
+    ]
 
 
 def test_get_transactions_rejects_invalid_amount_range_without_provider_call() -> None:
@@ -794,6 +800,9 @@ def test_spending_toolnode_injects_runtime_context() -> None:
     model_schema = model_schema_type.model_json_schema()
     assert "runtime" not in model_schema["properties"]
     assert set(model_schema["required"]) == {"from_date", "to_date"}
+    assert "quarter without a year" in model_schema["properties"]["from_date"][
+        "description"
+    ]
 
 
 def test_get_spending_by_category_forwards_dates_and_returns_safe_payload() -> None:
@@ -998,6 +1007,18 @@ def test_get_cash_flow_history_rejects_invalid_date_range() -> None:
             to_date=date(2026, 6, 1),
         )
     assert client.calls == []
+
+
+def test_get_cash_flow_history_exposes_current_year_date_guidance() -> None:
+    schema_type = cast(BaseTool, get_cash_flow_history).tool_call_schema
+    assert not isinstance(schema_type, dict)
+    schema = schema_type.model_json_schema()
+
+    assert "runtime" not in schema["properties"]
+    assert set(schema["required"]) == {"from_date", "to_date"}
+    assert "quarter without a year" in schema["properties"]["from_date"][
+        "description"
+    ]
 
 
 def test_get_cash_flow_history_rejects_missing_dates() -> None:

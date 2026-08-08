@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -62,6 +62,23 @@ def expected_prompt(profile, additional_prompt=None):
         prompt_parts.append(additional_prompt.strip())
 
     return "\n\n".join(prompt_parts)
+
+
+def test_system_prompt_includes_authoritative_runtime_date_context():
+    configuration = WingAgentConfiguration.from_settings(make_settings())
+
+    prompt = get_system_prompt(
+        configuration,
+        current_date=date(2026, 8, 8),
+        timezone_name="UTC",
+    )
+
+    assert "Current date: 2026-08-08" in prompt
+    assert "Date-resolution timezone: UTC" in prompt
+    assert (
+        "quarter is given without a year, use the current calendar year" in prompt
+    )
+    assert "first quarter is January 1 through March 31" in prompt
 
 
 def patch_agent_graph(monkeypatch):

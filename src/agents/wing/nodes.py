@@ -76,6 +76,30 @@ class WingAgentNodes:
             },
         )
         return {"messages": [response]}
+    
+    def final_non_tool_response(self, state: WingGraphState) -> WingGraphState:
+        """Store a no-tool profile's final LLM response on the current turn."""
+        current_turn = state.get("current_turn", {})
+        last_message = state.get("messages", [])[-1] if state.get("messages") else None
+
+        if not isinstance(last_message, AIMessage) or last_message.tool_calls:
+            return {
+                "current_turn": {
+                    **current_turn,
+                    "final_answer": "I could not complete that request.",
+                    "error": "The agent did not return a final response.",
+                }
+            }
+
+        content = last_message.content
+        answer = content if isinstance(content, str) else str(content)
+        return {
+            "messages": [AIMessage(content=answer)],
+            "current_turn": {
+                **current_turn,
+                "final_answer": answer,
+            },
+        }
 
     def route_after_llm(self, state: WingGraphState) -> str:
         """Start another tool round only when it is bounded and non-duplicate."""
@@ -86,7 +110,7 @@ class WingAgentNodes:
         last_message = messages[-1]
 
         if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
-            return "final_answer"
+            return "final_non_tool_response"
 
         current_turn = state.get("current_turn", {})
         tool_round_count = current_turn.get("tool_round_count", 0)

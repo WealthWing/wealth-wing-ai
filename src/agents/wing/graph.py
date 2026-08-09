@@ -45,14 +45,14 @@ def build_graph(
         )
         graph.add_node("collect_results", nodes.collect_results)
         graph.add_node("final_answer", nodes.final_response)
-        graph.add_node("final_non_tool_response", nodes.final_non_tool_response)
+        graph.add_node("final_non_tool_response", nodes.record_direct_response)
         
         graph.add_conditional_edges(
         "llm",
         nodes.route_after_llm,
         {
             "tools": "tools",
-            "final_non_tool_response": "final_non_tool_response",
+            "final_non_tool_response": "record_direct_response",
             "final_answer": "final_answer",
         },
     )

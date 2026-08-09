@@ -53,6 +53,19 @@ class ToolResultPayload(TypedDict):
     ui: str | None
 
 
+class CachedToolResult(TypedDict):
+    result_type: str
+    source_tool: str
+    data: Any
+    applied_filters: dict[str, Any]
+
+
+class CachedToolResultBatch(TypedDict):
+    source_turn_id: str
+    retrieved_at: str
+    results: list[CachedToolResult]
+
+
 #class UIBlock(TypedDict):
 #    id: str
 #    component: str
@@ -104,6 +117,7 @@ class WingGraphState(TypedDict, total=False):
     current_turn_id: str | None
     #turns: dict[str, CurrentTurn]
     current_turn: CurrentTurn
+    last_successful_tool_results: CachedToolResultBatch
 
 
 WingAgentState = WingGraphState

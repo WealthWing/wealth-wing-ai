@@ -9,8 +9,10 @@ applyTo: "src/agents/wing/**/*.py,src/routers/wing.py,src/schemas/wing.py,tests/
 - Keep profile tool access deny-by-default and preserve read-only behavior.
 - Never invent transactions, balances, totals, categories, dates, or other
   financial facts.
-- Require a successful tool result from the current run before making factual
-  financial claims.
+- Require either a successful tool result from the current run or a successful,
+  provenance-tagged cached result from the same authenticated thread before
+  making factual financial claims. Reuse cached results only when their explicit
+  filters and scope fully match the current request.
 - Distinguish retrieved facts, deterministic calculations, and planning
   assumptions in the final response.
 - Treat no data, unavailable data, unauthorized access, malformed provider

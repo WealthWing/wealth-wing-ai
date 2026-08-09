@@ -6,7 +6,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
@@ -23,6 +23,8 @@ from pydantic import BaseModel
 from src.agents.wing.configuration import WingAgentConfiguration
 from src.agents.wing.profiles import PROFILES
 from src.agents.wing.state import (
+    CachedToolResult,
+    CachedToolResultBatch,
     CurrentTurn,
     FinalAnswer,
     ToolResult,
@@ -34,6 +36,8 @@ from src.config import Settings
 
 _StructuredOutput = TypeVar("_StructuredOutput", bound=BaseModel)
 logger = logging.getLogger(__name__)
+
+_TRUSTED_CONTEXT_TYPE = "trusted_financial_context"
 
 
 @dataclass(frozen=True)
@@ -55,11 +59,8 @@ class WingAgentNodes:
         if state.get("current_turn", {}).get("error"):
             return {}
 
-        messages = state.get("messages", [])
         system_prompt = runtime.context.get("resolved_system_prompt")
-
-        if system_prompt:
-            messages = [SystemMessage(content=system_prompt), *messages]
+        messages = _messages_for_model(state, system_prompt)
 
         log_extra = _log_extra(state, runtime, "llm")
         logger.info("wing_llm_started", extra=log_extra)
@@ -88,7 +89,7 @@ class WingAgentNodes:
         last_message = messages[-1]
 
         if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
-            return "final_non_tool_response"
+            return "record_final_response"
 
         current_turn = state.get("current_turn", {})
         tool_round_count = current_turn.get("tool_round_count", 0)
@@ -284,7 +285,7 @@ class WingAgentNodes:
                 "tool_error_count": len(tool_errors),
             },
         )
-        return {
+        next_state: WingGraphState = {
             "current_turn": {
                 **current_turn,
                 "tool_round_count": tool_round_count,
@@ -293,6 +294,15 @@ class WingAgentNodes:
                 "tool_errors": tool_errors,
             }
         }
+
+        turn_id = current_turn.get("turn_id")
+        if turn_id and results_by_id and not tool_errors:
+            next_state["last_successful_tool_results"] = _cached_result_batch(
+                turn_id,
+                list(results_by_id.values()),
+            )
+
+        return next_state
 
     async def final_response(
         self,
@@ -390,8 +400,8 @@ Rules:
             },
         }
 
-    def record_direct_response(self, state: WingGraphState) -> WingGraphState:
-        """Store a no-tool profile's final LLM response on the current turn."""
+    def record_final_response(self, state: WingGraphState) -> WingGraphState:
+        """Store the final non-tool LLM response on the current turn."""
         current_turn = state.get("current_turn", {})
         last_message = state.get("messages", [])[-1] if state.get("messages") else None
 
@@ -454,6 +464,87 @@ def _validate_structured_output(
     schema: type[_StructuredOutput],
 ) -> _StructuredOutput:
     return schema.model_validate(value)
+
+
+def _cached_result_batch(
+    turn_id: str,
+    tool_results: list[ToolResult],
+) -> CachedToolResultBatch:
+    cached_results: list[CachedToolResult] = []
+    for result in tool_results:
+        metadata = result.get("metadata", {})
+        raw_filters = metadata.get("filters", {}) if isinstance(metadata, dict) else {}
+        applied_filters = raw_filters if isinstance(raw_filters, dict) else {}
+        cached_results.append(
+            {
+                "result_type": result["result_type"],
+                "source_tool": result["source_tool"],
+                "data": result["data"],
+                "applied_filters": applied_filters,
+            }
+        )
+
+    return {
+        "source_turn_id": turn_id,
+        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "results": cached_results,
+    }
+
+
+def _messages_for_model(
+    state: WingGraphState,
+    system_prompt: str | None,
+) -> list[Any]:
+    stored_messages = list(state.get("messages", []))
+    current_turn_start = _last_human_message_index(stored_messages)
+
+    if current_turn_start is None:
+        historical_messages: list[Any] = []
+        current_turn_messages = stored_messages
+    else:
+        historical_messages = stored_messages[:current_turn_start]
+        current_turn_messages = stored_messages[current_turn_start:]
+
+    model_messages: list[Any] = []
+    if system_prompt:
+        model_messages.append(SystemMessage(content=system_prompt))
+
+    cached_results = state.get("last_successful_tool_results")
+    if cached_results:
+        model_messages.extend(
+            message
+            for message in historical_messages
+            if not isinstance(message, ToolMessage)
+            and not (isinstance(message, AIMessage) and message.tool_calls)
+        )
+    else:
+        # Preserve compatibility with checkpoints created before structured
+        # cached results were introduced.
+        model_messages.extend(historical_messages)
+
+    current_turn_id = state.get("current_turn", {}).get("turn_id")
+    if cached_results and cached_results.get("source_turn_id") != current_turn_id:
+        model_messages.append(
+            HumanMessage(
+                content=json.dumps(
+                    {
+                        "context_type": _TRUSTED_CONTEXT_TYPE,
+                        **cached_results,
+                    },
+                    default=str,
+                )
+            )
+        )
+
+    model_messages.extend(current_turn_messages)
+    return model_messages
+
+
+def _last_human_message_index(messages: list[Any]) -> int | None:
+    for index in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[index], HumanMessage):
+            return index
+    return None
 
 
 def _coerce_tool_result_payload(content: Any) -> ToolResultPayload:

@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from typing import cast
 
 from langchain_core.messages import AnyMessage
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
+from langgraph.runtime import Runtime
 from typing_extensions import Annotated, TypedDict
 
 from src.agents.wing.configuration import WingAgentConfiguration
@@ -73,6 +75,15 @@ class FakeFinalAnswerLLM:
         return FinalAnswer(answer="Summary complete.")
 
 
+class FakeCaptureLLM:
+    def __init__(self) -> None:
+        self.messages: list[AnyMessage] = []
+
+    async def ainvoke(self, messages: list[AnyMessage]) -> AIMessage:
+        self.messages = messages
+        return AIMessage(content="Follow-up complete.")
+
+
 def make_settings(**overrides: object) -> Settings:
     settings_values = {
         "ALLOWED_HOSTS": "testserver",
@@ -122,7 +133,14 @@ def test_collect_results_uses_tool_payload_and_runtime_identity() -> None:
                         {
                             "result_type": "transaction_summary",
                             "data": {"total": 100},
-                            "metadata": {"currency": "USD"},
+                            "metadata": {
+                                "filters": {
+                                    "from_date": "2026-06-01",
+                                    "to_date": "2026-06-30",
+                                },
+                                "provider_payload": "do not cache",
+                            },
+                            "ui": "transactions_summary_ui",
                         }
                     ),
                     tool_call_id="call-1",
@@ -139,13 +157,35 @@ def test_collect_results_uses_tool_payload_and_runtime_identity() -> None:
             "result_type": "transaction_summary",
             "source_tool": "get_transactions_summary",
             "data": {"total": 100},
-            "metadata": {"currency": "USD"},
+            "metadata": {
+                "filters": {
+                    "from_date": "2026-06-01",
+                    "to_date": "2026-06-30",
+                },
+                "provider_payload": "do not cache",
+            },
+            "ui": "transactions_summary_ui",
         }
     ]
     assert current_turn.get("tool_errors") == []
     assert current_turn.get("tool_round_count") == 1
     assert current_turn.get("tool_call_signatures") == [
         "get_transactions_summary:{}"
+    ]
+    cached_results = result.get("last_successful_tool_results")
+    assert cached_results is not None
+    assert cached_results["source_turn_id"] == "turn-1"
+    assert datetime.fromisoformat(cached_results["retrieved_at"]).tzinfo is not None
+    assert cached_results["results"] == [
+        {
+            "result_type": "transaction_summary",
+            "source_tool": "get_transactions_summary",
+            "data": {"total": 100},
+            "applied_filters": {
+                "from_date": "2026-06-01",
+                "to_date": "2026-06-30",
+            },
+        }
     ]
 
 
@@ -184,6 +224,7 @@ def test_collect_results_records_invalid_tool_payload() -> None:
         }
     ]
     assert nodes.route_after_tool_results(result) == "final_answer"
+    assert "last_successful_tool_results" not in result
 
 
 def test_final_response_uses_tool_results_without_turn_filters() -> None:
@@ -342,10 +383,10 @@ def test_route_after_tool_results_continues_without_errors() -> None:
     assert nodes.route_after_tool_results({"current_turn": {}}) == "llm"
 
 
-def test_record_direct_response_stores_answer_on_current_turn() -> None:
+def test_record_final_response_stores_answer_without_adding_a_message() -> None:
     nodes = make_nodes()
 
-    result = nodes.record_direct_response(
+    result = nodes.record_final_response(
         {
             "messages": [AIMessage(content="I can help reconcile that import.")],
             "current_turn": {"turn_id": "turn-1", "user_input": "help"},
@@ -357,6 +398,118 @@ def test_record_direct_response_stores_answer_on_current_turn() -> None:
         "user_input": "help",
         "final_answer": "I can help reconcile that import.",
     }
+    assert "messages" not in result
+
+
+def test_call_llm_injects_cached_context_and_prunes_historical_tool_protocol() -> None:
+    class FakeRuntime:
+        context: WingRuntimeContext = {"resolved_system_prompt": "system prompt"}
+
+    llm = FakeCaptureLLM()
+    nodes = make_nodes(llm)
+    previous_tool_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "get_transactions_summary",
+                "args": {},
+                "id": "call-1",
+            }
+        ],
+    )
+    state: WingGraphState = {
+        "messages": [
+            HumanMessage(content="Summarize June."),
+            previous_tool_call,
+            ToolMessage(content='{"raw": "historical"}', tool_call_id="call-1"),
+            AIMessage(content="June summary."),
+            HumanMessage(content="How much was the net activity?"),
+        ],
+        "current_turn": {
+            "turn_id": "turn-2",
+            "user_input": "How much was the net activity?",
+        },
+        "last_successful_tool_results": {
+            "source_turn_id": "turn-1",
+            "retrieved_at": "2026-08-09T12:00:00+00:00",
+            "results": [
+                {
+                    "result_type": "transaction_summary",
+                    "source_tool": "get_transactions_summary",
+                    "data": {"net_activity": 338000},
+                    "applied_filters": {
+                        "from_date": "2026-06-01",
+                        "to_date": "2026-06-30",
+                    },
+                }
+            ],
+        },
+    }
+
+    response = asyncio.run(
+        nodes._call_llm(
+            state,
+            cast(Runtime[WingRuntimeContext], FakeRuntime()),
+        )
+    )
+
+    assert response == {"messages": [AIMessage(content="Follow-up complete.")]}
+    assert isinstance(llm.messages[0], SystemMessage)
+    assert not any(isinstance(message, ToolMessage) for message in llm.messages)
+    assert not any(
+        isinstance(message, AIMessage) and message.tool_calls
+        for message in llm.messages
+    )
+    cached_message = llm.messages[-2]
+    assert isinstance(cached_message, HumanMessage)
+    cached_payload = json.loads(str(cached_message.content))
+    assert cached_payload["context_type"] == "trusted_financial_context"
+    assert cached_payload["results"][0]["data"] == {"net_activity": 338000}
+    assert llm.messages[-1].content == "How much was the net activity?"
+
+
+def test_call_llm_does_not_duplicate_cache_from_current_turn() -> None:
+    class FakeRuntime:
+        context: WingRuntimeContext = {"resolved_system_prompt": "system prompt"}
+
+    llm = FakeCaptureLLM()
+    nodes = make_nodes(llm)
+    tool_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "get_transactions_summary",
+                "args": {},
+                "id": "call-2",
+            }
+        ],
+    )
+    state: WingGraphState = {
+        "messages": [
+            HumanMessage(content="Summarize July."),
+            tool_call,
+            ToolMessage(content='{"net_activity": 100}', tool_call_id="call-2"),
+        ],
+        "current_turn": {"turn_id": "turn-2", "user_input": "Summarize July."},
+        "last_successful_tool_results": {
+            "source_turn_id": "turn-2",
+            "retrieved_at": "2026-08-09T12:00:00+00:00",
+            "results": [],
+        },
+    }
+
+    asyncio.run(
+        nodes._call_llm(
+            state,
+            cast(Runtime[WingRuntimeContext], FakeRuntime()),
+        )
+    )
+
+    assert any(isinstance(message, ToolMessage) for message in llm.messages)
+    assert all(
+        "trusted_financial_context" not in str(message.content)
+        for message in llm.messages
+    )
 
 
 def test_collect_results_accepts_transaction_summary_toolnode_payload() -> None:

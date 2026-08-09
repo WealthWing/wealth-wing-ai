@@ -84,7 +84,6 @@ def _response_from_current_turn(
             for result in current_turn.get("tool_results", [])
             if (serialized := _serialize_result(result)) is not None
         ],
-        tool_results=current_turn.get("tool_results", []),
         applied_filters=None,
         error=error,
     )

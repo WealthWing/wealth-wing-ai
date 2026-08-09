@@ -5,7 +5,7 @@ from uuid import UUID
 
 from pydantic import AliasChoices, BaseModel, Field
 
-from src.agents.wing.state import ProfileId, ToolResult
+from src.agents.wing.state import ProfileId
 
 
 class WingAgentRequest(BaseModel):
@@ -48,6 +48,5 @@ class WingAgentResponse(BaseModel):
     turn_id: str
     answer: str
     results: list[WingAgentResult] = Field(default_factory=list)
-    tool_results: list[ToolResult]
     applied_filters: dict[str, Any] | None = None
     error: WingAgentError | None = None

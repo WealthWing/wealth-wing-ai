@@ -25,6 +25,22 @@ Or run directly:
 uvicorn main:app --reload --env-file .env
 ```
 
+### Run and debug in VS Code
+
+Install the workspace's recommended Python extensions, then select the
+`venv` interpreter with **Python: Select Interpreter**.
+
+- To debug with breakpoints, open **Run and Debug**, select
+  **FastAPI: Debug**, and press `F5`.
+- To debug while automatically reloading after file changes, select
+  **FastAPI: Debug with reload**. The no-reload profile is more predictable
+  when stepping through code.
+- To run without a debugger, use **Terminal > Run Task > FastAPI: Run
+  normally**. You can also press `Ctrl+F5` (`Control+F5` on macOS) with a
+  FastAPI launch profile selected.
+
+All FastAPI VS Code profiles listen on `http://localhost:8080` and load `.env`.
+
 ## Docker
 
 Build and run the API locally:

@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import date, datetime
+from datetime import date
 from typing import cast
 from uuid import UUID, uuid4
 
@@ -23,12 +23,7 @@ from src.agents.wing.configuration import WingAgentConfiguration
 from src.agents.wing.nodes import WingAgentNodes
 from src.agents.wing.profiles import get_profile
 from src.agents.wing.prompts import get_system_prompt
-from src.agents.wing.state import (
-    ResolvedFilters,
-    StandardParams,
-    WingGraphState,
-    WingRuntimeContext,
-)
+from src.agents.wing.state import WingGraphState, WingRuntimeContext
 from src.config import Settings
 from src.dependencies import get_wing_checkpointer
 from src.providers.ww_data_client import WWDataClient
@@ -107,7 +102,6 @@ def patch_agent_graph(monkeypatch):
 
     def fake_build_graph(**kwargs):
         captured["tools"] = [tool.name for tool in kwargs["tools"]]
-        captured["tools_by_name"] = sorted(kwargs["tools_by_name"])
         captured["llm_type"] = type(kwargs["llm"]).__name__
         captured["llm_with_tools_type"] = type(kwargs["llm_with_tools"]).__name__
         captured["checkpointer"] = kwargs["checkpointer"]
@@ -672,30 +666,41 @@ def test_wing_agent_keeps_runtime_credentials_private(monkeypatch):
     assert "secret-token" not in json.dumps(_serialize_for_json(agent.last_runtime_context))
 
 
-def test_wing_agent_debug_output_serializes_current_turn_models():
+def test_wing_agent_debug_output_serializes_current_turn_data():
     current_turn = {
-        "filters": ResolvedFilters(
-            params=StandardParams(from_date=datetime(2026, 6, 1, 0, 0, 0)),
-            date_source="explicit",
-        )
+        "tool_results": [
+            {
+                "result_id": "call-1",
+                "result_type": "transaction_summary",
+                "source_tool": "get_transactions_summary",
+                "data": {"net_activity": 338000},
+                "metadata": {
+                    "filters": {
+                        "from_date": "2026-06-01",
+                        "to_date": "2026-06-30",
+                    }
+                },
+            }
+        ]
     }
 
     serialized = _serialize_for_json(current_turn)
 
     assert json.loads(json.dumps(serialized)) == {
-        "filters": {
-            "params": {
-                "page": 1,
-                "page_size": 20,
-                "sort_by": None,
-                "sort_order": "desc",
-                "search": None,
-                "filter_by": [],
-                "from_date": "2026-06-01T00:00:00",
-                "to_date": None,
-            },
-            "date_source": "explicit",
-        }
+        "tool_results": [
+            {
+                "result_id": "call-1",
+                "result_type": "transaction_summary",
+                "source_tool": "get_transactions_summary",
+                "data": {"net_activity": 338000},
+                "metadata": {
+                    "filters": {
+                        "from_date": "2026-06-01",
+                        "to_date": "2026-06-30",
+                    }
+                },
+            }
+        ]
     }
 
 
@@ -734,7 +739,6 @@ def test_wing_agent_nodes_read_profile_and_prompt_from_runtime_context():
     )
     runtime = cast(Runtime[WingRuntimeContext], FakeRuntime())
 
-    assert nodes.load_profile(state, runtime) == {}
     response = asyncio.run(nodes._call_llm(state, runtime))
 
     assert response == {"messages": [AIMessage(content="ok")]}

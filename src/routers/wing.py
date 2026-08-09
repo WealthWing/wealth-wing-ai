@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Request
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from src.agents.wing.agent import WingAgent
-from src.agents.wing.state import CurrentTurn, ResolvedFilters
+from src.agents.wing.state import CurrentTurn
 from src.config import Settings
 from src.dependencies import (
     get_app_settings,
@@ -85,7 +85,7 @@ def _response_from_current_turn(
             if (serialized := _serialize_result(result)) is not None
         ],
         tool_results=current_turn.get("tool_results", []),
-        applied_filters=_serialize_filters(current_turn.get("filters")),
+        applied_filters=None,
         error=error,
     )
 
@@ -113,13 +113,6 @@ def _public_error(current_turn: CurrentTurn) -> WingAgentError | None:
         )
 
     return None
-
-
-def _serialize_filters(filters: Any) -> dict[str, Any] | None:
-    try:
-        return ResolvedFilters.model_validate(filters).model_dump(mode="json")
-    except (TypeError, ValueError):
-        return None
 
 
 def _serialize_result(result: Any) -> WingAgentResult | None:

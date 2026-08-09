@@ -25,7 +25,6 @@ from src.agents.wing.profiles import PROFILES
 from src.agents.wing.state import (
     CurrentTurn,
     FinalAnswer,
-    ResolvedFilters,
     ToolResult,
     ToolResultPayload,
     WingGraphState,
@@ -46,29 +45,6 @@ class WingAgentNodes:
     llm_with_tools: ChatOpenAI
     llm_factory: Callable[[float | None], ChatOpenAI] | None = None
 
-    def load_profile(
-        self,
-        state: WingGraphState,
-        runtime: Runtime[WingRuntimeContext],
-    ) -> WingGraphState:
-        """Validate the profile selected for this run."""
-        profile = runtime.context.get("agent_profile")
-
-        if profile is None:
-            return self._turn_error(state, runtime, "agent_profile is required")
-
-        if profile not in PROFILES:
-            return self._turn_error(
-                state,
-                runtime,
-                f"Invalid agent_profile: {profile}",
-            )
-
-        logger.info(
-            "wing_node_completed",
-            extra=_log_extra(state, runtime, "load_profile"),
-        )
-        return {}
 
     async def _call_llm(
         self,
@@ -140,106 +116,9 @@ class WingAgentNodes:
             )
             return "final_answer"
 
-        return "resolve_filters"
+        return "tools"
 
-    async def resolve_filters(
-        self,
-        state: WingGraphState,
-        runtime: Runtime[WingRuntimeContext],
-    ) -> WingGraphState:
-        """Resolve request filters for the current turn."""
-        current_turn: CurrentTurn = state.get("current_turn", {})
-        user_input = current_turn.get("user_input", "")
-        intent = current_turn.get("intent", {}).get("intent")
-        timezone_name = runtime.context.get("timezone", "UTC")
-
-        try:
-            timezone = ZoneInfo(timezone_name)
-        except Exception:
-            timezone = ZoneInfo("UTC")
-
-        now = datetime.now(timezone)
-        structured_llm = self._llm_for_temperature(0).with_structured_output(
-            ResolvedFilters
-        )
-        log_extra = _log_extra(state, runtime, "resolve_filters")
-        logger.info("wing_filter_resolution_started", extra=log_extra)
-        try:
-            raw_filters: object = await _ainvoke_model(
-                structured_llm,
-                [
-                    SystemMessage(content=f"""
-You extract filters from a Wealth Wing user request.
-
-Current datetime: {now.isoformat()}
-
-Rules:
-- Extract only filters the user explicitly asks for.
-- Convert relative dates such as "last month", "this month", "last 30 days",
-  "in May", or "this year" into actual datetime values.
-- Do not invent a default date range.
-- If the user does not mention a time period, leave from_date and to_date as null.
-- Default page=1, page_size=20, and sort_order="desc" unless explicitly requested.
-- Do not extract category, account, merchant, transaction-type, amount, or
-  account-type filters. Those belong to the selected tool's arguments.
-- Search is only for general description matching. Example:
-  "Find transactions with 'Starbucks' in the description" should set search="Starbucks".
-- Return only the structured output.
-                    """.strip()),
-                    HumanMessage(content=user_input),
-                ],
-            )
-            extracted_filters = _validate_structured_output(
-                raw_filters,
-                ResolvedFilters,
-            )
-        except Exception:
-            logger.exception("wing_filter_resolution_failed", extra=log_extra)
-            raise
-
-        params = extracted_filters.params
-        date_source = (
-            "explicit" if params.from_date or params.to_date else "not_applicable"
-        )
-
-        if not params.from_date and not params.to_date:
-            if intent in {"summarize_spending", "compare_spending"}:
-                current_month_start = now.replace(
-                    day=1,
-                    hour=0,
-                    minute=0,
-                    second=0,
-                    microsecond=0,
-                )
-                previous_month_end = current_month_start - timedelta(microseconds=1)
-                previous_month_start = previous_month_end.replace(
-                    day=1,
-                    hour=0,
-                    minute=0,
-                    second=0,
-                    microsecond=0,
-                )
-
-                params.from_date = previous_month_start
-                params.to_date = previous_month_end
-                date_source = "default_last_completed_month"
-
-            elif intent in {"list_transactions", "find_transactions"}:
-                params.from_date = now - timedelta(days=30)
-                params.to_date = now
-                date_source = "default_last_30_days"
-
-        resolved_filters = ResolvedFilters(
-            params=params,
-            date_source=date_source,
-        )
-
-        next_current_turn: CurrentTurn = {
-            **current_turn,
-            "filters": resolved_filters,
-        }
-        logger.info("wing_filter_resolution_completed", extra=log_extra)
-        return {"current_turn": next_current_turn}
+ 
 
     def _llm_for_temperature(self, temperature: float | None = None) -> ChatOpenAI:
         if self.llm_factory is None:
@@ -538,10 +417,6 @@ Rules:
         runtime: Runtime[WingRuntimeContext],
         error: str,
     ) -> WingGraphState:
-        logger.warning(
-            "wing_profile_validation_failed",
-            extra=_log_extra(state, runtime, "load_profile"),
-        )
         next_current_turn: CurrentTurn = {
             **state.get("current_turn", {}),
             "error": error,

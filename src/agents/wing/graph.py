@@ -34,29 +34,26 @@ def build_graph(
     )
 
     graph = StateGraph(WingGraphState, context_schema=WingRuntimeContext)
-    graph.add_node("load_profile", nodes.load_profile)
     graph.add_node("llm", nodes._call_llm)
-    graph.add_edge(START, "load_profile")
-    graph.add_edge("load_profile", "llm")
+    graph.add_edge(START, "llm")
 
     if tools:
         graph.add_node(
+
             "tools",
             ToolNode(tools, handle_tool_errors=_safe_tool_error),
         )
-        graph.add_node("resolve_filters", nodes.resolve_filters)
         graph.add_node("collect_results", nodes.collect_results)
         graph.add_node("final_answer", nodes.final_response)
         
         graph.add_conditional_edges(
-            "llm",
-            nodes.route_after_llm,
-            {
-                "resolve_filters": "resolve_filters",
-                "final_answer": "final_answer",
-            },
-        )
-        graph.add_edge("resolve_filters", "tools")
+        "llm",
+        nodes.route_after_llm,
+        {
+            "tools": "tools",
+            "final_answer": "final_answer",
+        },
+    )
         graph.add_edge("tools", "collect_results")
         graph.add_conditional_edges(
             "collect_results",

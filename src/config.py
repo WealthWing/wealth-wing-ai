@@ -53,6 +53,7 @@ class Settings(BaseSettings):
             "http://localhost:3000",
             "https://localhost:3001",
             "http://localhost:3001",
+            self.fe_url if self.fe_url else "",
         ]
 
         if self.fe_url:

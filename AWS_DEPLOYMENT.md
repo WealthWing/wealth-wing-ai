@@ -1,109 +1,242 @@
-# AWS ECS Fargate deployment
+# AWS ECS Express Mode deployment
 
-This guide deploys the Wealth Wing AI container to one Linux/X86_64 ECS Fargate
-task behind an HTTPS Application Load Balancer. It intentionally uses one task
-because agent checkpoints are stored in process memory.
+This is the beginner-friendly, production-aligned deployment path for Wealth
+Wing AI. It deploys the existing Docker image with Amazon ECS Express Mode.
+Express Mode creates and manages the Fargate service, HTTPS Application Load
+Balancer, networking, health monitoring, scaling, and CloudWatch logging.
+
+The first deployment uses the AWS-provided HTTPS URL. Add a custom domain only
+after the service and frontend work correctly.
+
+## Architecture
+
+```text
+Local repository
+    |
+    | build and push Docker image
+    v
+Amazon ECR
+    |
+    | deploy image digest
+    v
+ECS Express Mode ----> Public HTTPS URL
+    |                         |
+    |                         +----> React frontend
+    |
+    +----> CloudWatch Logs
+    +----> Secrets Manager (TOGETHER_API_KEY)
+```
+
+## Important application limitation
+
+The Wing agent currently stores checkpoints in process memory. Keep the service
+at one task and one Uvicorn worker:
+
+```text
+Minimum tasks: 1
+Maximum tasks: 1
+```
+
+A task replacement or deployment can clear conversation history. This is
+acceptable for the learning deployment. Move checkpoints to durable shared
+storage before scaling beyond one task.
+
+## Approximate monthly cost
+
+The following estimate assumes `us-east-1`, 730 hours per month, one Linux/X86
+Fargate task with `0.25 vCPU` and `1 GB` memory, very light traffic, the default
+public networking created by Express Mode, and one secret.
+
+| Resource | Approximate monthly cost |
+| --- | ---: |
+| Fargate task | $10.63 |
+| Application Load Balancer base charge | $16.43 |
+| Public IPv4 addresses (typically two for the ALB and one for the task) | $10.95 |
+| Secrets Manager | $0.40 |
+| ALB usage, ECR storage, CloudWatch logs, and light data transfer | $0-$2 |
+| **Expected backend total** | **about $40-$45/month** |
+
+These prices are estimates, not a billing guarantee. Taxes, traffic, log
+volume, additional images, and future AWS price changes can change the total.
+Together AI model usage, Cognito charges beyond any applicable free allowance,
+the React frontend, and the Wealth Wing Data API are not included.
+
+Before deploying, create an AWS Budget alert at a monthly amount you are
+comfortable with. New-account credits can reduce the initial bill, but do not
+design around receiving them.
+
+Amazon Lightsail Containers offers a lower-cost Micro plan with `0.25 vCPU` and
+`1 GB` memory for about $10/month. It is not the selected workflow because ECS
+Express Mode provides the direct Secrets Manager integration and standard ECS
+resources that this authenticated financial API should use. Lightsail remains
+an option for a short-lived learning demo if its secret-handling tradeoff is
+accepted.
+
+Current pricing references:
+
+- [AWS Fargate pricing](https://aws.amazon.com/fargate/pricing/)
+- [Elastic Load Balancing pricing](https://aws.amazon.com/elasticloadbalancing/pricing/)
+- [Amazon VPC public IPv4 pricing](https://aws.amazon.com/vpc/pricing/)
+- [AWS Secrets Manager pricing](https://aws.amazon.com/secrets-manager/pricing/)
+- [Amazon ECR pricing](https://aws.amazon.com/ecr/pricing/)
+- [Amazon CloudWatch pricing](https://aws.amazon.com/cloudwatch/pricing/)
+- [Amazon Lightsail pricing](https://aws.amazon.com/lightsail/pricing/)
 
 ## 1. Prerequisites
 
-Prepare the following values before deploying:
+Use the same AWS Region as the Cognito user pool. The current local
+configuration uses `us-east-1`.
 
-- AWS account ID and Region
-- A DNS name for the API, such as `ai.example.com`
-- An ACM certificate in the same Region as the load balancer
-- The deployed React origin, such as `https://app.example.com`
+Prepare the following:
+
+- An AWS account with billing alerts enabled
+- AWS CLI v2, authenticated to the intended AWS account
+- Docker with Buildx support
+- A default VPC with public subnets in at least two Availability Zones
+- The deployed React origin, or `http://localhost:3000` for initial testing
 - Cognito user-pool values
 - Together API credentials
 - Reachable Wealth Wing Data API and health URLs
 
-Create an ECR repository named `wealth-wing-ai` and enable image scanning. Use
-immutable tags such as a Git commit SHA instead of relying on `latest`.
-
-## 2. Build and push the image
-
-Set shell variables for this deployment:
+Confirm the AWS identity and Region before creating resources:
 
 ```bash
-AWS_ACCOUNT_ID=<aws-account-id>
-AWS_REGION=<aws-region>
-IMAGE_TAG=<git-commit-sha>
-ECR_REPOSITORY=wealth-wing-ai
-ECR_REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+aws sts get-caller-identity
+aws configure get region
 ```
+
+Set deployment variables in the shell:
+
+```bash
+DEPLOY_REGION=us-east-1
+DEPLOY_ACCOUNT_ID="$(aws sts get-caller-identity --query Account --output text)"
+DEPLOY_IMAGE_TAG="$(git rev-parse --short HEAD)"
+DEPLOY_ECR_REPOSITORY=wealth-wing-ai
+DEPLOY_ECR_REGISTRY="${DEPLOY_ACCOUNT_ID}.dkr.ecr.${DEPLOY_REGION}.amazonaws.com"
+```
+
+## 2. Verify the container locally
+
+Build and recreate the local container so it receives the current `.env`:
+
+```bash
+docker compose up -d --build --force-recreate api
+curl --fail http://127.0.0.1:8001/health/ping
+docker compose ps
+```
+
+The health endpoint must return HTTP `200` before continuing.
+
+The local `.env` file is not copied into the image and is not synchronized to
+AWS. AWS configuration is entered separately during service creation.
+
+## 3. Create the ECR repository
+
+Create the private repository once:
+
+```bash
+aws ecr create-repository \
+  --region "${DEPLOY_REGION}" \
+  --repository-name "${DEPLOY_ECR_REPOSITORY}" \
+  --image-tag-mutability IMMUTABLE \
+  --image-scanning-configuration scanOnPush=true
+```
+
+If the repository already exists, do not create it again.
 
 Authenticate Docker to ECR:
 
 ```bash
-aws ecr get-login-password --region "${AWS_REGION}" \
-  | docker login --username AWS --password-stdin "${ECR_REGISTRY}"
+aws ecr get-login-password --region "${DEPLOY_REGION}" \
+  | docker login \
+      --username AWS \
+      --password-stdin "${DEPLOY_ECR_REGISTRY}"
 ```
 
-Build the AMD64 runtime image and push it directly to ECR. The explicit platform
-is required when publishing from an ARM-based Mac for an X86_64 Fargate task.
+## 4. Build and push the image
+
+Express Mode uses Linux/X86_64 by default. The explicit platform is especially
+important when building on an Apple Silicon Mac.
 
 ```bash
 docker buildx build \
   --platform linux/amd64 \
   --target runtime \
-  --tag "${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}" \
+  --tag "${DEPLOY_ECR_REGISTRY}/${DEPLOY_ECR_REPOSITORY}:${DEPLOY_IMAGE_TAG}" \
   --push \
   .
 ```
 
-Confirm that the pushed image passed ECR's vulnerability scan before deploying
-it.
+In the ECR console, confirm that the image exists and review its vulnerability
+scan. Deploy by image digest when the ECS console offers that choice. A digest
+identifies the exact immutable image being deployed.
 
-## 3. Configure secrets and logs
+## 5. Store the Together API key
 
-Store `TOGETHER_API_KEY` in AWS Secrets Manager. Create a CloudWatch log group
-for the service with a 14-day retention period.
+Do not place the Together API key in the Docker image, command history, or a
+plain ECS environment variable.
 
-The ECS task execution role needs permission to:
+In the AWS console:
 
-- Pull the image from ECR
-- Write to the CloudWatch log group
-- Read the selected Together API secret
+1. Open **Secrets Manager**.
+2. Choose **Store a new secret**.
+3. Choose **Other type of secret**.
+4. Store the `TOGETHER_API_KEY` value.
+5. Name the secret `wealth-wing-ai/together-api-key`.
+6. Copy the secret ARN for the ECS configuration.
 
-The application itself does not currently call AWS APIs, so its task role does
-not need additional permissions.
+The ECS task execution role must have `secretsmanager:GetSecretValue`
+permission for this specific secret ARN. If the ECS console-created execution
+role does not include that access, add this least-privilege inline policy to the
+role and replace `<secret-arn>`:
 
-## 4. Create the Fargate task definition
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": "secretsmanager:GetSecretValue",
+      "Resource": "<secret-arn>"
+    }
+  ]
+}
+```
 
-Create a task definition with these task-level settings:
+## 6. Create the ECS Express Mode service
+
+Open the AWS console and go to:
+
+```text
+Amazon ECS -> Express mode -> Create
+```
+
+Use these settings:
 
 | Setting | Value |
 | --- | --- |
-| Launch type | Fargate |
-| Operating system | Linux |
-| CPU architecture | X86_64 |
-| Network mode | `awsvpc` |
+| Service name | `wealth-wing-ai` |
+| Image | The ECR image digest from step 4 |
+| Container port | `8000` |
+| Health-check path | `/health/ping` |
 | CPU | `0.25 vCPU` |
 | Memory | `1 GB` |
-| Container port | `8000/TCP` |
-| Essential container | Yes |
-| Init process | Enabled |
-| Read-only root filesystem | Enabled |
+| Minimum tasks | `1` |
+| Maximum tasks | `1` |
+| Networking | Default public VPC configuration |
 
-Create an empty task volume named `tmp` and mount it read/write at `/tmp`. ECS
-Fargate does not support the Docker `tmpfs` task parameter, so this writable
-ephemeral mount complements the read-only root filesystem.
+Allow the console to create the Express Mode infrastructure role. Select an ECS
+task execution role that can pull from ECR, write CloudWatch logs, and read only
+the selected Together secret.
 
-Configure the `awslogs` log driver and use the image command already defined in
-the Dockerfile. Do not add multiple Uvicorn workers.
+Express Mode creates the HTTPS load balancer, target group, security groups,
+CloudWatch log group, health monitoring, and AWS-provided URL. Do not create a
+separate load balancer, target group, NAT Gateway, or ECS service for this
+workflow.
 
-Define this health check in the ECS container definition. ECS does not monitor a
-Dockerfile health check unless it is also present in the task definition.
+### Plain environment variables
 
-```text
-CMD,python,-c,import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ping', timeout=2)
-```
-
-Use an interval of 30 seconds, timeout of 5 seconds, 3 retries, and a 10-second
-start period.
-
-### Environment values
-
-Set these ordinary environment values in the container definition:
+Add these as ordinary environment variables. Replace all placeholder values:
 
 ```text
 ENVIRONMENT=production
@@ -116,7 +249,7 @@ ALLOWED_HOSTS=*
 FORWARDED_ALLOW_IPS=*
 MODEL=openai/gpt-oss-120b
 TOGETHER_API_BASE=https://api.together.xyz/v1
-AWS_REGION=<aws-region>
+AWS_REGION=us-east-1
 COGNITO_USER_POOL_ID=<user-pool-id>
 COGNITO_JWKS_URL=<cognito-jwks-url>
 COGNITO_ISSUER=<cognito-issuer>
@@ -125,74 +258,108 @@ WEALTH_WING_DATA_URL=<data-api-url>
 WEALTH_WING_DATA_HEALTH_URL=<data-health-url>
 ```
 
-Map `TOGETHER_API_KEY` from its Secrets Manager ARN through the task
-definition's **Secrets** section rather than placing it in plaintext.
+For initial local-frontend testing, use `http://localhost:3000` for `FE_URL`
+and `CORS_ORIGINS`. Update both after the React frontend is deployed.
 
-`ALLOWED_HOSTS=*` allows ALB health checks, whose Host header contains the
-target's private IP. This is acceptable for this demo only when the task
-security group permits inbound traffic exclusively from the ALB security
-group. `FORWARDED_ALLOW_IPS=*` has the same network-boundary requirement.
+`ALLOWED_HOSTS=*` permits the AWS-provided hostname and load-balancer health
+checks. This is acceptable for this learning deployment because Express Mode
+creates a task security group that permits inbound application traffic only
+from its load balancer. Revisit this setting when customizing networking.
 
-## 5. Create networking and the load balancer
+### Secret environment variable
 
-For this cost-conscious demo, place the task in public subnets and enable a
-public IP so it can reach Cognito, Together, and other public HTTPS endpoints
-without a NAT Gateway.
-
-Use two security groups:
-
-1. The ALB security group accepts public HTTPS on port 443. Port 80 may be used
-   only to redirect HTTP to HTTPS.
-2. The task security group accepts port 8000 only from the ALB security group.
-   It must not accept port 8000 directly from the internet.
-
-Create an internet-facing Application Load Balancer and an IP target group:
-
-| Setting | Value |
-| --- | --- |
-| Target protocol and port | HTTP, `8000` |
-| Health path | `/health/ping` |
-| Healthy status | `200` |
-| Health interval | 30 seconds |
-| Health timeout | 5 seconds |
-| Healthy threshold | 2 |
-| Unhealthy threshold | 3 |
-
-Attach the ACM certificate to the HTTPS listener and redirect HTTP traffic to
-HTTPS. Set the ALB idle timeout to 300 seconds so multi-step agent requests are
-not cut off by the default timeout. Point the API DNS record at the ALB.
-
-## 6. Create the ECS service
-
-Create a Fargate service using the task definition, public subnets, public IPs,
-the task security group, and the ALB target group. Configure:
+Add one secret reference:
 
 ```text
-Desired tasks: 1
-Minimum tasks: 1
-Maximum tasks: 1
-Health-check grace period: 30 seconds
-Autoscaling: disabled
+Name: TOGETHER_API_KEY
+Value source: <Secrets Manager ARN from step 5>
 ```
 
-Do not add tasks or workers while `InMemorySaver` is used. A deployment or task
-replacement clears all conversation history, which is expected for this demo.
-
-When a Secrets Manager value changes, force a new ECS deployment so new tasks
-receive the updated environment value.
+Create the service and wait until the deployment status is active and the
+target is healthy.
 
 ## 7. Verify the deployment
 
-Confirm the following after the ECS target becomes healthy:
+Copy the application URL displayed by Express Mode:
 
-```bash
-curl --fail "https://<api-domain>/health/ping"
-curl --silent --output /dev/null --write-out '%{http_code}\n' \
-  "https://<api-domain>/agents/wing/invoke"
+```text
+https://<service-name>.ecs.us-east-1.on.aws
 ```
 
-The health endpoint must return `200`; the protected endpoint without a bearer
-token must return `401`. Then use the React application to verify Cognito login,
-an authenticated agent request, and a follow-up request with the returned
-`thread_id`. Confirm that structured request logs appear in CloudWatch and that
-the task cannot be reached directly on port 8000.
+Verify the public and protected endpoints:
+
+```bash
+DEPLOY_API_URL=https://<service-name>.ecs.us-east-1.on.aws
+
+curl --fail "${DEPLOY_API_URL}/health/ping"
+curl --silent --output /dev/null --write-out '%{http_code}\n' \
+  "${DEPLOY_API_URL}/agents/wing/invoke"
+```
+
+Expected results:
+
+- `/health/ping` returns `200`.
+- `/agents/wing/invoke` without a bearer token returns `401`.
+
+Next, confirm that structured logs appear in CloudWatch. Use the React
+application to test Cognito login, one authenticated agent request, and a
+follow-up request using the returned `thread_id`.
+
+## 8. Connect the React frontend
+
+Set the frontend API base URL to the Express Mode application URL. Update the
+backend `FE_URL` and `CORS_ORIGINS` if the deployed React origin differs from
+the initial value, then deploy a new ECS service revision.
+
+Use the AWS-provided HTTPS URL until the full application works. A custom API
+domain and ACM certificate can be added later without changing the container.
+
+## 9. Deploy updates
+
+### Code, dependency, or Dockerfile change
+
+1. Run the local verification.
+2. Choose a new immutable image tag.
+3. Build and push the new image to ECR.
+4. Update the Express Mode service to the new image digest.
+5. Repeat the health, authentication, frontend, and log checks.
+
+Do not overwrite or reuse an existing image tag.
+
+### Environment-variable change
+
+Update the Express Mode environment configuration and deploy the new service
+revision. Changing the local `.env` does not update AWS.
+
+### Secret change
+
+Update the value in Secrets Manager, then force a new ECS deployment. A running
+container does not automatically receive a changed secret value.
+
+## 10. Control cost and clean up
+
+Check AWS Cost Explorer and the budget alert after the first 24 hours and again
+after the first week.
+
+Express Mode resources continue to incur charges while the service exists, even
+when the API receives no user traffic. To stop the recurring backend cost,
+delete the Express Mode service from the ECS console. Then confirm whether these
+separately managed resources should also be deleted:
+
+- Old ECR images or the ECR repository
+- The Together API secret
+- CloudWatch log groups retained after service deletion
+- IAM roles created only for this service
+- Custom DNS records or certificates, if added later
+
+Never delete shared IAM roles, load balancers, security groups, or networking
+resources without first confirming which services use them.
+
+## Later migration path
+
+When the application and AWS concepts are familiar, move to a custom ECS task
+definition and infrastructure as code such as AWS CDK, CloudFormation, or
+Terraform. Before scaling out, replace in-memory checkpoints with durable
+shared storage. Express Mode leaves the underlying ECS and load-balancer
+resources visible in the AWS account, so the learning transfers directly to
+standard ECS operations.

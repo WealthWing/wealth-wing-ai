@@ -76,7 +76,7 @@ docker compose down
 The container writes JSON logs to stdout, which is the expected pattern for
 Docker, ECS, CloudWatch, and similar log collectors.
 
-For the manual ECR and ECS Fargate deployment workflow, see
+For the ECR and ECS Express Mode deployment workflow, see
 [AWS_DEPLOYMENT.md](AWS_DEPLOYMENT.md).
 
 ## Configuration

@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, tzinfo
+from datetime import datetime
 from typing import cast
 
 from langchain_core.messages import AnyMessage
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
@@ -18,8 +18,7 @@ from src.agents.wing.configuration import WingAgentConfiguration
 from src.agents.wing.nodes import WingAgentNodes
 from src.agents.wing.state import (
     CurrentTurn,
-    ResolvedFilters,
-    StandardParams,
+    FinalAnswer,
     WingGraphState,
     WingRuntimeContext,
 )
@@ -28,40 +27,10 @@ from src.config import Settings
 from src.providers.ww_data_schemas import TransactionSummaryResponse
 
 
-class FakeStructuredLLM:
-    def __init__(self, response: ResolvedFilters | dict[str, object]) -> None:
-        self.response = response
-
-    def invoke(self, messages: object) -> ResolvedFilters | dict[str, object]:
-        return self.response
-
-
-class FakeLLM:
-    def __init__(self, response: ResolvedFilters | dict[str, object]) -> None:
-        self.response = response
-
-    def with_structured_output(self, schema: object) -> FakeStructuredLLM:
-        return FakeStructuredLLM(self.response)
-
-
-class FakeRuntime:
-    context: WingRuntimeContext = {"timezone": "America/New_York"}
-
-
-def fake_runtime() -> Runtime[WingRuntimeContext]:
-    return cast(Runtime[WingRuntimeContext], FakeRuntime())
-
-
 def required_current_turn(state: WingGraphState) -> CurrentTurn:
     current_turn = state.get("current_turn")
     assert current_turn is not None
     return current_turn
-
-
-def required_filters(state: WingGraphState) -> ResolvedFilters:
-    filters = required_current_turn(state).get("filters")
-    assert filters is not None
-    return filters
 
 
 class ToolSmokeState(TypedDict, total=False):
@@ -93,6 +62,28 @@ class FakeTransactionSummaryClient:
         )
 
 
+class FakeFinalAnswerLLM:
+    def __init__(self) -> None:
+        self.messages: object | None = None
+
+    def with_structured_output(self, schema: object) -> FakeFinalAnswerLLM:
+        assert schema is FinalAnswer
+        return self
+
+    async def ainvoke(self, messages: object) -> FinalAnswer:
+        self.messages = messages
+        return FinalAnswer(answer="Summary complete.")
+
+
+class FakeCaptureLLM:
+    def __init__(self) -> None:
+        self.messages: list[AnyMessage] = []
+
+    async def ainvoke(self, messages: list[AnyMessage]) -> AIMessage:
+        self.messages = messages
+        return AIMessage(content="Follow-up complete.")
+
+
 def make_settings(**overrides: object) -> Settings:
     settings_values = {
         "ALLOWED_HOSTS": "testserver",
@@ -108,138 +99,21 @@ def make_settings(**overrides: object) -> Settings:
     return Settings(**settings_values)
 
 
-def make_nodes(response: ResolvedFilters | dict[str, object]) -> WingAgentNodes:
+def make_nodes(llm: object | None = None) -> WingAgentNodes:
     settings = make_settings()
-    llm = cast(ChatOpenAI, FakeLLM(response))
+    chat_model = cast(ChatOpenAI, llm or object())
 
     return WingAgentNodes(
         settings=settings,
         configuration=WingAgentConfiguration.from_settings(settings),
         tools_by_name={},
-        llm=llm,
-        llm_with_tools=llm,
+        llm=chat_model,
+        llm_with_tools=chat_model,
     )
-
-
-def test_resolve_filters_defaults_spending_to_last_completed_month(
-    monkeypatch,
-) -> None:
-    class FrozenDateTime(datetime):
-        @classmethod
-        def now(cls, tz: tzinfo | None = None) -> FrozenDateTime:
-            return cls(2026, 7, 15, 12, 0, tzinfo=tz)
-
-    monkeypatch.setattr("src.agents.wing.nodes.datetime", FrozenDateTime)
-    nodes = make_nodes(ResolvedFilters())
-
-    result = asyncio.run(
-        nodes.resolve_filters(
-            {
-                "current_turn": {
-                    "turn_id": "turn-1",
-                    "user_input": "summarize my spending",
-                    "intent": {
-                        "intent": "summarize_spending",
-                        "confidence": 1.0,
-                        "needs_clarification": False,
-                        "clarification_question": None,
-                    },
-                }
-            },
-            fake_runtime(),
-        )
-    )
-
-    filters = required_filters(result)
-
-    assert filters.date_source == "default_last_completed_month"
-    assert filters.params.from_date is not None
-    assert filters.params.to_date is not None
-    assert filters.params.from_date.month == 6
-    assert filters.params.to_date.month == 6
-
-
-def test_resolve_filters_preserves_explicit_dates_from_llm_dict() -> None:
-    nodes = make_nodes(
-        {
-            "params": {
-                "from_date": "2026-05-01T00:00:00",
-                "to_date": "2026-05-31T23:59:59",
-                "page": 2,
-            },
-            "date_source": "explicit",
-        }
-    )
-
-    result = asyncio.run(
-        nodes.resolve_filters(
-            {
-                "current_turn": {
-                    "turn_id": "turn-1",
-                    "user_input": "show May spending page 2",
-                    "intent": {
-                        "intent": "summarize_spending",
-                        "confidence": 1.0,
-                        "needs_clarification": False,
-                        "clarification_question": None,
-                    },
-                }
-            },
-            fake_runtime(),
-        )
-    )
-
-    filters = required_filters(result)
-
-    assert filters.date_source == "explicit"
-    assert filters.params.from_date == datetime(2026, 5, 1, 0, 0, 0)
-    assert filters.params.to_date == datetime(2026, 5, 31, 23, 59, 59)
-    assert filters.params.page == 2
-
-
-def test_resolve_filters_leaves_transaction_categories_to_the_tool_call() -> None:
-    nodes = make_nodes(
-        {
-            "params": {
-                "from_date": "2026-07-01T00:00:00Z",
-                "to_date": "2026-07-03T02:53:25.037505Z",
-                "sort_by": "date",
-                "search": None,
-                "filter_by": [],
-            },
-            "date_source": "explicit",
-        }
-    )
-
-    result = asyncio.run(
-        nodes.resolve_filters(
-            {
-                "current_turn": {
-                    "turn_id": "turn-1",
-                    "user_input": (
-                        "Can you explain how is my spending for dining this month?"
-                    ),
-                    "intent": {
-                        "intent": "summarize_spending",
-                        "confidence": 1.0,
-                        "needs_clarification": False,
-                        "clarification_question": None,
-                    },
-                }
-            },
-            fake_runtime(),
-        )
-    )
-
-    filters = required_filters(result)
-
-    assert filters.params.search is None
-    assert filters.params.filter_by == []
-    assert filters.params.sort_by == "date"
 
 
 def test_collect_results_uses_tool_payload_and_runtime_identity() -> None:
-    nodes = make_nodes(ResolvedFilters())
+    nodes = make_nodes()
 
     result = nodes.collect_results(
         {
@@ -259,7 +133,14 @@ def test_collect_results_uses_tool_payload_and_runtime_identity() -> None:
                         {
                             "result_type": "transaction_summary",
                             "data": {"total": 100},
-                            "metadata": {"currency": "USD"},
+                            "metadata": {
+                                "filters": {
+                                    "from_date": "2026-06-01",
+                                    "to_date": "2026-06-30",
+                                },
+                                "provider_payload": "do not cache",
+                            },
+                            "ui": "transactions_summary_ui",
                         }
                     ),
                     tool_call_id="call-1",
@@ -276,7 +157,14 @@ def test_collect_results_uses_tool_payload_and_runtime_identity() -> None:
             "result_type": "transaction_summary",
             "source_tool": "get_transactions_summary",
             "data": {"total": 100},
-            "metadata": {"currency": "USD"},
+            "metadata": {
+                "filters": {
+                    "from_date": "2026-06-01",
+                    "to_date": "2026-06-30",
+                },
+                "provider_payload": "do not cache",
+            },
+            "ui": "transactions_summary_ui",
         }
     ]
     assert current_turn.get("tool_errors") == []
@@ -284,10 +172,25 @@ def test_collect_results_uses_tool_payload_and_runtime_identity() -> None:
     assert current_turn.get("tool_call_signatures") == [
         "get_transactions_summary:{}"
     ]
+    cached_results = result.get("last_successful_tool_results")
+    assert cached_results is not None
+    assert cached_results["source_turn_id"] == "turn-1"
+    assert datetime.fromisoformat(cached_results["retrieved_at"]).tzinfo is not None
+    assert cached_results["results"] == [
+        {
+            "result_type": "transaction_summary",
+            "source_tool": "get_transactions_summary",
+            "data": {"total": 100},
+            "applied_filters": {
+                "from_date": "2026-06-01",
+                "to_date": "2026-06-30",
+            },
+        }
+    ]
 
 
 def test_collect_results_records_invalid_tool_payload() -> None:
-    nodes = make_nodes(ResolvedFilters())
+    nodes = make_nodes()
 
     result = nodes.collect_results(
         {
@@ -321,10 +224,62 @@ def test_collect_results_records_invalid_tool_payload() -> None:
         }
     ]
     assert nodes.route_after_tool_results(result) == "final_answer"
+    assert "last_successful_tool_results" not in result
+
+
+def test_final_response_uses_tool_results_without_turn_filters() -> None:
+    llm = FakeFinalAnswerLLM()
+    nodes = make_nodes(llm)
+
+    result = asyncio.run(
+        nodes.final_response(
+            {
+                "current_turn": {
+                    "turn_id": "turn-1",
+                    "user_input": "Summarize June.",
+                    "tool_results": [
+                        {
+                            "result_id": "call-1",
+                            "result_type": "transaction_summary",
+                            "source_tool": "get_transactions_summary",
+                            "data": {"net_activity": 338000},
+                            "metadata": {
+                                "filters": {
+                                    "from_date": "2026-06-01",
+                                    "to_date": "2026-06-30",
+                                }
+                            },
+                        }
+                    ],
+                }
+            }
+        )
+    )
+
+    assert result["current_turn"]["final_answer"] == "Summary complete."
+    assert isinstance(llm.messages, list)
+    prompt_message = llm.messages[-1]
+    assert isinstance(prompt_message, HumanMessage)
+    assert json.loads(str(prompt_message.content)) == {
+        "user_question": "Summarize June.",
+        "resolved_filters": {},
+        "tool_results": [
+            {
+                "result_type": "transaction_summary",
+                "data": {"net_activity": 338000},
+                "metadata": {
+                    "filters": {
+                        "from_date": "2026-06-01",
+                        "to_date": "2026-06-30",
+                    }
+                },
+            }
+        ],
+    }
 
 
 def test_route_after_llm_starts_first_tool_round() -> None:
-    nodes = make_nodes(ResolvedFilters())
+    nodes = make_nodes()
 
     state: WingGraphState = {
         "messages": [
@@ -342,11 +297,11 @@ def test_route_after_llm_starts_first_tool_round() -> None:
         "current_turn": {},
     }
 
-    assert nodes.route_after_llm(state) == "resolve_filters"
+    assert nodes.route_after_llm(state) == "tools"
 
 
 def test_route_after_llm_stops_duplicate_tool_call() -> None:
-    nodes = make_nodes(ResolvedFilters())
+    nodes = make_nodes()
 
     state: WingGraphState = {
         "messages": [
@@ -371,7 +326,7 @@ def test_route_after_llm_stops_duplicate_tool_call() -> None:
 
 
 def test_route_after_llm_allows_same_tool_with_different_filters() -> None:
-    nodes = make_nodes(ResolvedFilters())
+    nodes = make_nodes()
 
     state: WingGraphState = {
         "messages": [
@@ -394,11 +349,11 @@ def test_route_after_llm_allows_same_tool_with_different_filters() -> None:
         },
     }
 
-    assert nodes.route_after_llm(state) == "resolve_filters"
+    assert nodes.route_after_llm(state) == "tools"
 
 
 def test_route_after_llm_stops_after_configured_tool_round_limit() -> None:
-    nodes = make_nodes(ResolvedFilters())
+    nodes = make_nodes()
 
     state: WingGraphState = {
         "messages": [
@@ -423,15 +378,15 @@ def test_route_after_llm_stops_after_configured_tool_round_limit() -> None:
 
 
 def test_route_after_tool_results_continues_without_errors() -> None:
-    nodes = make_nodes(ResolvedFilters())
+    nodes = make_nodes()
 
     assert nodes.route_after_tool_results({"current_turn": {}}) == "llm"
 
 
-def test_record_direct_response_stores_answer_on_current_turn() -> None:
-    nodes = make_nodes(ResolvedFilters())
+def test_record_final_response_stores_answer_without_adding_a_message() -> None:
+    nodes = make_nodes()
 
-    result = nodes.record_direct_response(
+    result = nodes.record_final_response(
         {
             "messages": [AIMessage(content="I can help reconcile that import.")],
             "current_turn": {"turn_id": "turn-1", "user_input": "help"},
@@ -443,6 +398,118 @@ def test_record_direct_response_stores_answer_on_current_turn() -> None:
         "user_input": "help",
         "final_answer": "I can help reconcile that import.",
     }
+    assert "messages" not in result
+
+
+def test_call_llm_injects_cached_context_and_prunes_historical_tool_protocol() -> None:
+    class FakeRuntime:
+        context: WingRuntimeContext = {"resolved_system_prompt": "system prompt"}
+
+    llm = FakeCaptureLLM()
+    nodes = make_nodes(llm)
+    previous_tool_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "get_transactions_summary",
+                "args": {},
+                "id": "call-1",
+            }
+        ],
+    )
+    state: WingGraphState = {
+        "messages": [
+            HumanMessage(content="Summarize June."),
+            previous_tool_call,
+            ToolMessage(content='{"raw": "historical"}', tool_call_id="call-1"),
+            AIMessage(content="June summary."),
+            HumanMessage(content="How much was the net activity?"),
+        ],
+        "current_turn": {
+            "turn_id": "turn-2",
+            "user_input": "How much was the net activity?",
+        },
+        "last_successful_tool_results": {
+            "source_turn_id": "turn-1",
+            "retrieved_at": "2026-08-09T12:00:00+00:00",
+            "results": [
+                {
+                    "result_type": "transaction_summary",
+                    "source_tool": "get_transactions_summary",
+                    "data": {"net_activity": 338000},
+                    "applied_filters": {
+                        "from_date": "2026-06-01",
+                        "to_date": "2026-06-30",
+                    },
+                }
+            ],
+        },
+    }
+
+    response = asyncio.run(
+        nodes._call_llm(
+            state,
+            cast(Runtime[WingRuntimeContext], FakeRuntime()),
+        )
+    )
+
+    assert response == {"messages": [AIMessage(content="Follow-up complete.")]}
+    assert isinstance(llm.messages[0], SystemMessage)
+    assert not any(isinstance(message, ToolMessage) for message in llm.messages)
+    assert not any(
+        isinstance(message, AIMessage) and message.tool_calls
+        for message in llm.messages
+    )
+    cached_message = llm.messages[-2]
+    assert isinstance(cached_message, HumanMessage)
+    cached_payload = json.loads(str(cached_message.content))
+    assert cached_payload["context_type"] == "trusted_financial_context"
+    assert cached_payload["results"][0]["data"] == {"net_activity": 338000}
+    assert llm.messages[-1].content == "How much was the net activity?"
+
+
+def test_call_llm_does_not_duplicate_cache_from_current_turn() -> None:
+    class FakeRuntime:
+        context: WingRuntimeContext = {"resolved_system_prompt": "system prompt"}
+
+    llm = FakeCaptureLLM()
+    nodes = make_nodes(llm)
+    tool_call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "get_transactions_summary",
+                "args": {},
+                "id": "call-2",
+            }
+        ],
+    )
+    state: WingGraphState = {
+        "messages": [
+            HumanMessage(content="Summarize July."),
+            tool_call,
+            ToolMessage(content='{"net_activity": 100}', tool_call_id="call-2"),
+        ],
+        "current_turn": {"turn_id": "turn-2", "user_input": "Summarize July."},
+        "last_successful_tool_results": {
+            "source_turn_id": "turn-2",
+            "retrieved_at": "2026-08-09T12:00:00+00:00",
+            "results": [],
+        },
+    }
+
+    asyncio.run(
+        nodes._call_llm(
+            state,
+            cast(Runtime[WingRuntimeContext], FakeRuntime()),
+        )
+    )
+
+    assert any(isinstance(message, ToolMessage) for message in llm.messages)
+    assert all(
+        "trusted_financial_context" not in str(message.content)
+        for message in llm.messages
+    )
 
 
 def test_collect_results_accepts_transaction_summary_toolnode_payload() -> None:
@@ -482,7 +549,7 @@ def test_collect_results_accepts_transaction_summary_toolnode_payload() -> None:
         )
     )
 
-    nodes = make_nodes(ResolvedFilters())
+    nodes = make_nodes()
     result = nodes.collect_results(
         {
             "messages": tool_state["messages"],

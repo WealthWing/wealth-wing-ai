@@ -14,12 +14,7 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from typing_extensions import Annotated, TypedDict
 
-from src.agents.wing.state import (
-    FilterByInputs,
-    ResolvedFilters,
-    StandardParams,
-    WingRuntimeContext,
-)
+from src.agents.wing.state import WingRuntimeContext
 from src.agents.wing.tools import (
     get_cash_flow_history,
     get_spending_by_category,
@@ -198,15 +193,8 @@ class FakeTransactionSummaryWWDataClient:
 
 def test_get_transactions_summary_returns_stable_payload_and_forwards_dates() -> None:
     client = FakeTransactionSummaryWWDataClient(_transaction_summary_response())
-    stale_filters = ResolvedFilters(
-        params=StandardParams(
-            from_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            to_date=datetime(2025, 1, 2, tzinfo=timezone.utc),
-        ),
-        date_source="explicit",
-    )
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": stale_filters}},
+        state={},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
@@ -268,7 +256,7 @@ def test_get_transactions_summary_defaults_to_last_completed_month(
     monkeypatch.setattr("src.agents.wing.tools.datetime", FrozenDateTime)
     client = FakeTransactionSummaryWWDataClient(_transaction_summary_response())
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": ResolvedFilters()}},
+        state={},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
@@ -295,7 +283,7 @@ def test_get_transactions_summary_preserves_zero_activity() -> None:
         }
     )
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": ResolvedFilters()}},
+        state={},
         context={
             "ww_data_client": FakeTransactionSummaryWWDataClient(response),
             "access_token": "secret-token",
@@ -311,52 +299,13 @@ def test_get_transactions_summary_preserves_zero_activity() -> None:
 def test_get_transactions_summary_rejects_partial_date_range() -> None:
     client = FakeTransactionSummaryWWDataClient(_transaction_summary_response())
     runtime = FakeToolRuntime(
-        state={
-            "current_turn": {
-                "filters": ResolvedFilters(
-                    params=StandardParams(
-                        from_date=datetime(2026, 6, 1, tzinfo=timezone.utc),
-                    )
-                )
-            }
-        },
+        state={},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
     with pytest.raises(ToolException, match="filters are invalid"):
         _invoke_transaction_summary(runtime, from_date=date(2026, 6, 1))
     assert client.calls == []
-
-
-def test_get_transactions_summary_ignores_resolved_filters() -> None:
-    client = FakeTransactionSummaryWWDataClient(_transaction_summary_response())
-    runtime = FakeToolRuntime(
-        state={
-            "current_turn": {
-                "filters": ResolvedFilters(
-                    params=StandardParams(
-                        filter_by=[
-                            FilterByInputs(
-                                field_name="category",
-                                values=["Groceries"],
-                            )
-                        ]
-                    )
-                )
-            }
-        },
-        context={"ww_data_client": client, "access_token": "secret-token"},
-    )
-
-    _invoke_transaction_summary(
-        runtime,
-        from_date=date(2026, 6, 1),
-        to_date=date(2026, 6, 30),
-    )
-
-    assert len(client.calls) == 1
-    assert client.calls[0]["request"].from_date == date(2026, 6, 1)
-    assert client.calls[0]["request"].to_date == date(2026, 6, 30)
 
 
 def test_get_transactions_summary_exposes_filters_to_the_model() -> None:
@@ -393,7 +342,7 @@ def test_get_transactions_summary_requires_runtime_dependencies(
     context: dict[str, Any],
 ) -> None:
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": ResolvedFilters()}},
+        state={},
         context=context,
     )
 
@@ -414,7 +363,7 @@ def test_get_transactions_summary_maps_provider_errors(
     message: str,
 ) -> None:
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": ResolvedFilters()}},
+        state={},
         context={
             "ww_data_client": FakeTransactionSummaryWWDataClient(provider_error),
             "access_token": "secret-token",
@@ -427,19 +376,8 @@ def test_get_transactions_summary_maps_provider_errors(
 
 def test_get_transactions_returns_stable_payload_and_forwards_filters() -> None:
     client = FakeWWDataClient(_provider_response())
-    stale_filters = ResolvedFilters(
-        params=StandardParams(
-            page=99,
-            page_size=1,
-            sort_by="title",
-            search="stale resolved search",
-            from_date=datetime(2025, 1, 1, tzinfo=timezone.utc),
-            to_date=datetime(2025, 1, 2, tzinfo=timezone.utc),
-        ),
-        date_source="explicit",
-    )
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": stale_filters}},
+        state={},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
@@ -565,7 +503,7 @@ def test_toolnode_injects_state_and_runtime_context() -> None:
                         ],
                     )
                 ],
-                "current_turn": {"filters": ResolvedFilters()},
+                "current_turn": {},
             },
             context=cast(
                 WingRuntimeContext,
@@ -631,7 +569,7 @@ def test_get_transactions_exposes_all_filters_to_the_model() -> None:
 def test_get_transactions_rejects_invalid_amount_range_without_provider_call() -> None:
     client = FakeWWDataClient(_provider_response())
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": ResolvedFilters()}},
+        state={},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
@@ -656,60 +594,13 @@ def test_get_transactions_rejects_invalid_pagination_without_provider_call() -> 
     assert client.calls == []
 
 
-def test_get_transactions_ignores_resolved_filters() -> None:
-    client = FakeWWDataClient(_provider_response())
-    runtime = FakeToolRuntime(
-        state={
-            "current_turn": {
-                "filters": ResolvedFilters(
-                    params=StandardParams(
-                        filter_by=[
-                            FilterByInputs(
-                                field_name="category",
-                                values=["Groceries"],
-                            )
-                        ]
-                    )
-                )
-            }
-        },
-        context={"ww_data_client": client, "access_token": "secret-token"},
-    )
-
-    result = _invoke(runtime)
-
-    assert len(client.calls) == 1
-    assert client.calls[0]["params"].model_dump() == {
-        "page": 1,
-        "page_size": 30,
-        "sort_by": None,
-        "sort_order": "desc",
-        "search": None,
-        "from_date": None,
-        "to_date": None,
-    }
-    assert client.calls[0]["transaction_filters"].model_dump() == {
-        "category_ids": None,
-        "category_names": None,
-        "account_ids": None,
-        "account_names": None,
-        "merchant_search": None,
-        "transaction_types": None,
-        "minimum_amount_cents": None,
-        "maximum_amount_cents": None,
-        "account_type": None,
-    }
-    assert "from_date" not in result["metadata"]["filters"]
-    assert "to_date" not in result["metadata"]["filters"]
-
-
 @pytest.mark.parametrize(
     "context",
     [{}, {"ww_data_client": FakeWWDataClient(_provider_response())}],
 )
 def test_get_transactions_requires_runtime_dependencies(context: dict[str, Any]) -> None:
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": ResolvedFilters()}},
+        state={},
         context=context,
     )
 
@@ -852,7 +743,7 @@ def test_get_spending_by_category_forwards_dates_and_returns_safe_payload() -> N
 def test_get_spending_by_category_requires_dates() -> None:
     client = FakeCategorySpendingWWDataClient([])
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": ResolvedFilters()}},
+        state={},
         context={"ww_data_client": client, "access_token": "secret-token"},
     )
 
@@ -885,7 +776,7 @@ def test_get_spending_by_category_requires_runtime_dependencies(
     context: dict[str, Any],
 ) -> None:
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": ResolvedFilters()}},
+        state={},
         context=context,
     )
 
@@ -910,7 +801,7 @@ def test_get_spending_by_category_maps_provider_errors(
     message: str,
 ) -> None:
     runtime = FakeToolRuntime(
-        state={"current_turn": {"filters": ResolvedFilters()}},
+        state={},
         context={
             "ww_data_client": FakeCategorySpendingWWDataClient(provider_error),
             "access_token": "secret-token",

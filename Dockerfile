@@ -16,7 +16,7 @@ COPY requirements.txt .
 RUN python -m venv /opt/venv \
     && /opt/venv/bin/python -m pip install --upgrade pip setuptools wheel \
     && /opt/venv/bin/python -m pip install -r requirements.txt \
-    && /opt/venv/bin/python -m pip uninstall -y pip setuptools wheel packaging
+    && /opt/venv/bin/python -m pip uninstall -y pip setuptools wheel
 
 FROM python:${PYTHON_VERSION}-alpine${ALPINE_VERSION} AS runtime
 

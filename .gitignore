@@ -23,7 +23,10 @@ build/
 dist/
 
 # Local editor/OS files
-.vscode/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
 .DS_Store
 
 # Local helper scripts

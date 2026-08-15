@@ -6,7 +6,7 @@ import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, TypeVar
 from zoneinfo import ZoneInfo
 
@@ -23,9 +23,10 @@ from pydantic import BaseModel
 from src.agents.wing.configuration import WingAgentConfiguration
 from src.agents.wing.profiles import PROFILES
 from src.agents.wing.state import (
+    CachedToolResult,
+    CachedToolResultBatch,
     CurrentTurn,
     FinalAnswer,
-    ResolvedFilters,
     ToolResult,
     ToolResultPayload,
     WingGraphState,
@@ -35,6 +36,8 @@ from src.config import Settings
 
 _StructuredOutput = TypeVar("_StructuredOutput", bound=BaseModel)
 logger = logging.getLogger(__name__)
+
+_TRUSTED_CONTEXT_TYPE = "trusted_financial_context"
 
 
 @dataclass(frozen=True)
@@ -46,29 +49,6 @@ class WingAgentNodes:
     llm_with_tools: ChatOpenAI
     llm_factory: Callable[[float | None], ChatOpenAI] | None = None
 
-    def load_profile(
-        self,
-        state: WingGraphState,
-        runtime: Runtime[WingRuntimeContext],
-    ) -> WingGraphState:
-        """Validate the profile selected for this run."""
-        profile = runtime.context.get("agent_profile")
-
-        if profile is None:
-            return self._turn_error(state, runtime, "agent_profile is required")
-
-        if profile not in PROFILES:
-            return self._turn_error(
-                state,
-                runtime,
-                f"Invalid agent_profile: {profile}",
-            )
-
-        logger.info(
-            "wing_node_completed",
-            extra=_log_extra(state, runtime, "load_profile"),
-        )
-        return {}
 
     async def _call_llm(
         self,
@@ -79,11 +59,8 @@ class WingAgentNodes:
         if state.get("current_turn", {}).get("error"):
             return {}
 
-        messages = state.get("messages", [])
         system_prompt = runtime.context.get("resolved_system_prompt")
-
-        if system_prompt:
-            messages = [SystemMessage(content=system_prompt), *messages]
+        messages = _messages_for_model(state, system_prompt)
 
         log_extra = _log_extra(state, runtime, "llm")
         logger.info("wing_llm_started", extra=log_extra)
@@ -100,6 +77,8 @@ class WingAgentNodes:
             },
         )
         return {"messages": [response]}
+    
+
 
     def route_after_llm(self, state: WingGraphState) -> str:
         """Start another tool round only when it is bounded and non-duplicate."""
@@ -110,7 +89,7 @@ class WingAgentNodes:
         last_message = messages[-1]
 
         if not isinstance(last_message, AIMessage) or not last_message.tool_calls:
-            return "final_answer"
+            return "record_final_response"
 
         current_turn = state.get("current_turn", {})
         tool_round_count = current_turn.get("tool_round_count", 0)
@@ -140,106 +119,9 @@ class WingAgentNodes:
             )
             return "final_answer"
 
-        return "resolve_filters"
+        return "tools"
 
-    async def resolve_filters(
-        self,
-        state: WingGraphState,
-        runtime: Runtime[WingRuntimeContext],
-    ) -> WingGraphState:
-        """Resolve request filters for the current turn."""
-        current_turn: CurrentTurn = state.get("current_turn", {})
-        user_input = current_turn.get("user_input", "")
-        intent = current_turn.get("intent", {}).get("intent")
-        timezone_name = runtime.context.get("timezone", "UTC")
-
-        try:
-            timezone = ZoneInfo(timezone_name)
-        except Exception:
-            timezone = ZoneInfo("UTC")
-
-        now = datetime.now(timezone)
-        structured_llm = self._llm_for_temperature(0).with_structured_output(
-            ResolvedFilters
-        )
-        log_extra = _log_extra(state, runtime, "resolve_filters")
-        logger.info("wing_filter_resolution_started", extra=log_extra)
-        try:
-            raw_filters: object = await _ainvoke_model(
-                structured_llm,
-                [
-                    SystemMessage(content=f"""
-You extract filters from a Wealth Wing user request.
-
-Current datetime: {now.isoformat()}
-
-Rules:
-- Extract only filters the user explicitly asks for.
-- Convert relative dates such as "last month", "this month", "last 30 days",
-  "in May", or "this year" into actual datetime values.
-- Do not invent a default date range.
-- If the user does not mention a time period, leave from_date and to_date as null.
-- Default page=1, page_size=20, and sort_order="desc" unless explicitly requested.
-- Do not extract category, account, merchant, transaction-type, amount, or
-  account-type filters. Those belong to the selected tool's arguments.
-- Search is only for general description matching. Example:
-  "Find transactions with 'Starbucks' in the description" should set search="Starbucks".
-- Return only the structured output.
-                    """.strip()),
-                    HumanMessage(content=user_input),
-                ],
-            )
-            extracted_filters = _validate_structured_output(
-                raw_filters,
-                ResolvedFilters,
-            )
-        except Exception:
-            logger.exception("wing_filter_resolution_failed", extra=log_extra)
-            raise
-
-        params = extracted_filters.params
-        date_source = (
-            "explicit" if params.from_date or params.to_date else "not_applicable"
-        )
-
-        if not params.from_date and not params.to_date:
-            if intent in {"summarize_spending", "compare_spending"}:
-                current_month_start = now.replace(
-                    day=1,
-                    hour=0,
-                    minute=0,
-                    second=0,
-                    microsecond=0,
-                )
-                previous_month_end = current_month_start - timedelta(microseconds=1)
-                previous_month_start = previous_month_end.replace(
-                    day=1,
-                    hour=0,
-                    minute=0,
-                    second=0,
-                    microsecond=0,
-                )
-
-                params.from_date = previous_month_start
-                params.to_date = previous_month_end
-                date_source = "default_last_completed_month"
-
-            elif intent in {"list_transactions", "find_transactions"}:
-                params.from_date = now - timedelta(days=30)
-                params.to_date = now
-                date_source = "default_last_30_days"
-
-        resolved_filters = ResolvedFilters(
-            params=params,
-            date_source=date_source,
-        )
-
-        next_current_turn: CurrentTurn = {
-            **current_turn,
-            "filters": resolved_filters,
-        }
-        logger.info("wing_filter_resolution_completed", extra=log_extra)
-        return {"current_turn": next_current_turn}
+ 
 
     def _llm_for_temperature(self, temperature: float | None = None) -> ChatOpenAI:
         if self.llm_factory is None:
@@ -403,7 +285,7 @@ Rules:
                 "tool_error_count": len(tool_errors),
             },
         )
-        return {
+        next_state: WingGraphState = {
             "current_turn": {
                 **current_turn,
                 "tool_round_count": tool_round_count,
@@ -412,6 +294,15 @@ Rules:
                 "tool_errors": tool_errors,
             }
         }
+
+        turn_id = current_turn.get("turn_id")
+        if turn_id and results_by_id and not tool_errors:
+            next_state["last_successful_tool_results"] = _cached_result_batch(
+                turn_id,
+                list(results_by_id.values()),
+            )
+
+        return next_state
 
     async def final_response(
         self,
@@ -509,8 +400,8 @@ Rules:
             },
         }
 
-    def record_direct_response(self, state: WingGraphState) -> WingGraphState:
-        """Store a no-tool profile's final LLM response on the current turn."""
+    def record_final_response(self, state: WingGraphState) -> WingGraphState:
+        """Store the final non-tool LLM response on the current turn."""
         current_turn = state.get("current_turn", {})
         last_message = state.get("messages", [])[-1] if state.get("messages") else None
 
@@ -538,10 +429,6 @@ Rules:
         runtime: Runtime[WingRuntimeContext],
         error: str,
     ) -> WingGraphState:
-        logger.warning(
-            "wing_profile_validation_failed",
-            extra=_log_extra(state, runtime, "load_profile"),
-        )
         next_current_turn: CurrentTurn = {
             **state.get("current_turn", {}),
             "error": error,
@@ -577,6 +464,87 @@ def _validate_structured_output(
     schema: type[_StructuredOutput],
 ) -> _StructuredOutput:
     return schema.model_validate(value)
+
+
+def _cached_result_batch(
+    turn_id: str,
+    tool_results: list[ToolResult],
+) -> CachedToolResultBatch:
+    cached_results: list[CachedToolResult] = []
+    for result in tool_results:
+        metadata = result.get("metadata", {})
+        raw_filters = metadata.get("filters", {}) if isinstance(metadata, dict) else {}
+        applied_filters = raw_filters if isinstance(raw_filters, dict) else {}
+        cached_results.append(
+            {
+                "result_type": result["result_type"],
+                "source_tool": result["source_tool"],
+                "data": result["data"],
+                "applied_filters": applied_filters,
+            }
+        )
+
+    return {
+        "source_turn_id": turn_id,
+        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "results": cached_results,
+    }
+
+
+def _messages_for_model(
+    state: WingGraphState,
+    system_prompt: str | None,
+) -> list[Any]:
+    stored_messages = list(state.get("messages", []))
+    current_turn_start = _last_human_message_index(stored_messages)
+
+    if current_turn_start is None:
+        historical_messages: list[Any] = []
+        current_turn_messages = stored_messages
+    else:
+        historical_messages = stored_messages[:current_turn_start]
+        current_turn_messages = stored_messages[current_turn_start:]
+
+    model_messages: list[Any] = []
+    if system_prompt:
+        model_messages.append(SystemMessage(content=system_prompt))
+
+    cached_results = state.get("last_successful_tool_results")
+    if cached_results:
+        model_messages.extend(
+            message
+            for message in historical_messages
+            if not isinstance(message, ToolMessage)
+            and not (isinstance(message, AIMessage) and message.tool_calls)
+        )
+    else:
+        # Preserve compatibility with checkpoints created before structured
+        # cached results were introduced.
+        model_messages.extend(historical_messages)
+
+    current_turn_id = state.get("current_turn", {}).get("turn_id")
+    if cached_results and cached_results.get("source_turn_id") != current_turn_id:
+        model_messages.append(
+            HumanMessage(
+                content=json.dumps(
+                    {
+                        "context_type": _TRUSTED_CONTEXT_TYPE,
+                        **cached_results,
+                    },
+                    default=str,
+                )
+            )
+        )
+
+    model_messages.extend(current_turn_messages)
+    return model_messages
+
+
+def _last_human_message_index(messages: list[Any]) -> int | None:
+    for index in range(len(messages) - 1, -1, -1):
+        if isinstance(messages[index], HumanMessage):
+            return index
+    return None
 
 
 def _coerce_tool_result_payload(content: Any) -> ToolResultPayload:

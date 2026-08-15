@@ -41,6 +41,78 @@ Install the workspace's recommended Python extensions, then select the
 
 All FastAPI VS Code profiles listen on `http://localhost:8080` and load `.env`.
 
+## Heroku
+
+The current Heroku deployment uses the Python buildpack. The repository-root
+deployment files are:
+
+- `.python-version`, containing `3.12`. Heroku installs the latest supported
+  Python 3.12 patch release. Do not add `runtime.txt`; Heroku has deprecated it.
+- `requirements.txt`, containing the production dependencies.
+- `Procfile`, containing the production web process:
+
+  ```procfile
+  web: uvicorn main:app --host 0.0.0.0 --port=$PORT
+  ```
+
+These files must be committed before deployment. Heroku builds from Git commits
+and does not receive staged or untracked files.
+
+Install the Heroku CLI, sign in, and connect the repository to the existing app:
+
+```bash
+heroku login
+heroku git:remote -a wealth-wing-ai
+```
+
+Configure non-secret production settings. Replace the frontend URL if it is
+hosted somewhere else:
+
+```bash
+heroku config:set -a wealth-wing-ai \
+  ENVIRONMENT=production \
+  LOG_FORMAT=json \
+  ENABLE_DOCS=false \
+  FE_URL=https://your-frontend.example.com \
+  CORS_ORIGINS=https://your-frontend.example.com \
+  ALLOWED_HOSTS=wealth-wing-ai-a6cbcb55da72.herokuapp.com
+```
+
+Set provider and Cognito credentials with Heroku config vars rather than
+committing `.env`:
+
+```bash
+heroku config:set -a wealth-wing-ai \
+  TOGETHER_API_KEY="replace-me" \
+  TOGETHER_API_BASE=https://api.together.xyz/v1 \
+  MODEL=openai/gpt-oss-120b \
+  COGNITO_USER_POOL_ID="replace-me" \
+  AWS_REGION="replace-me" \
+  COGNITO_JWKS_URL="replace-me" \
+  COGNITO_ISSUER="replace-me" \
+  COGNITO_CLIENT_ID="replace-me" \
+  WEALTH_WING_DATA_URL="replace-me" \
+  WEALTH_WING_DATA_HEALTH_URL="replace-me"
+```
+
+Deploy the current local branch to the app's `main` branch:
+
+```bash
+git push heroku HEAD:main
+```
+
+Ensure the web process is running, then verify the public liveness endpoint:
+
+```bash
+heroku ps:scale web=1 -a wealth-wing-ai
+heroku ps -a wealth-wing-ai
+curl https://wealth-wing-ai-a6cbcb55da72.herokuapp.com/health/ping
+```
+
+Use `heroku logs --tail -a wealth-wing-ai` to inspect startup or request errors.
+The `/health` endpoint also checks configured providers, while `/health/ping`
+only verifies that the API process is responding.
+
 ## Docker
 
 Create `.env` from the example and fill in the provider and Cognito values before

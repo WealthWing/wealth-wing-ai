@@ -4,11 +4,13 @@ services:
       context: .
       dockerfile: Dockerfile
       target: runtime
+    env_file:
+      - .env
     environment:
       ENVIRONMENT: local
       LOG_FORMAT: json
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8001:8000"
     init: true
     read_only: true
     security_opt:

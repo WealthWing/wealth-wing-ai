@@ -43,15 +43,41 @@ All FastAPI VS Code profiles listen on `http://localhost:8080` and load `.env`.
 
 ## Docker
 
-Build and run the API locally:
+Create `.env` from the example and fill in the provider and Cognito values before
+starting the container:
 
 ```bash
-docker compose up --build
+cp .env.example .env
+docker compose up --build --detach
+docker compose ps
 ```
 
-The container listens on `http://localhost:8000` and writes JSON logs to stdout,
-which is the expected pattern for Docker, ECS, CloudWatch, and similar log
-collectors.
+The API is available only on the local machine at `http://localhost:8001`. Point
+the React application's AI API base URL there, then verify the container with:
+
+```bash
+curl http://localhost:8001/health/ping
+docker compose logs --follow api
+```
+
+Compose passes `.env` to the container at runtime; `.env` remains excluded from
+the image and Git. If Wealth Wing Data runs directly on host port `8000`, use
+`http://host.docker.internal:8000` for `WEALTH_WING_DATA_URL`. A remote backend
+should use its normal HTTPS URL. The container still listens internally on port
+`8000`; only the local host port is changed to avoid a conflict with Wealth Wing
+Data.
+
+Stop the local service with:
+
+```bash
+docker compose down
+```
+
+The container writes JSON logs to stdout, which is the expected pattern for
+Docker, ECS, CloudWatch, and similar log collectors.
+
+For the manual ECR and ECS Fargate deployment workflow, see
+[AWS_DEPLOYMENT.md](AWS_DEPLOYMENT.md).
 
 ## Configuration
 
@@ -75,8 +101,10 @@ Error responses include a `request_id`, and the same ID is returned as the
 
 ## Health Check
 
+For the Docker Compose service:
+
 ```bash
-curl http://localhost:8000/health/ping
+curl http://localhost:8001/health/ping
 ```
 
 Expected response:
@@ -88,7 +116,7 @@ Expected response:
 Provider health is available at `/health`:
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:8001/health
 ```
 
 Expected healthy response:

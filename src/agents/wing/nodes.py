@@ -21,7 +21,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.runtime import Runtime
 from pydantic import BaseModel
 from src.agents.wing.configuration import WingAgentConfiguration
-from src.agents.wing.profiles import PROFILES
+from src.agents.wing.prompts import FINAL_RESPONSE_PROMPT
 from src.agents.wing.state import (
     CachedToolResult,
     CachedToolResultBatch,
@@ -363,25 +363,7 @@ class WingAgentNodes:
             raw_answer = await _ainvoke_model(
                 self.llm.with_structured_output(FinalAnswer),
                 [
-                    SystemMessage(content="""
-You are Wealth Wing's final financial response formatter.
-
-Use only the supplied tool results as factual source material.
-
-Return concise Markdown only.
-
-Rules:
-- Never invent a number, date range, trend, merchant, category, or cause.
-- Do not claim a period such as "last month" unless from_date and to_date exist.
-- When dates exist, mention the period clearly.
-- Monetary values are integer cents. Format them as USD.
-- income is a positive inflow.
-- expense is a positive outflow.
-- net is already calculated as income minus expenses.
-- Do not explain internal tools, graph state, metadata, or implementation.
-- Be direct and concise.
-- Keep the answer in neutral tone. Avoid prescriptive or judgmental language.
-                    """.strip()),
+                    SystemMessage(content=FINAL_RESPONSE_PROMPT.strip()),
                     HumanMessage(content=json.dumps(answer_input, default=str)),
                 ]
             )

@@ -177,15 +177,25 @@ def _public_result_data(
         }
 
     if result_type == "spending_by_category" and isinstance(data, dict):
+        categories = data.get("spending_by_categories", [])
+        if not isinstance(categories, list):
+            return None
+
         return {
-            "categories": [
+            **_select_fields(
+                data,
+                "total_spending_by_category",
+                "transaction_count",
+            ),
+            "spending_by_categories": [
                 _select_fields(
                     category,
                     "category_id",
                     "category",
                     "expense",
+                    "transaction_count",
                 )
-                for category in data.get("categories", [])
+                for category in categories
                 if isinstance(category, dict)
             ],
         }

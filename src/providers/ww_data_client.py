@@ -87,7 +87,7 @@ class WWDataClient:
         *,
         access_token: str,
         params: CategorySpendingParams,
-    ) -> list[CategorySpendingResponse]:
+    ) -> CategorySpendingResponse:
         query_params = params.model_dump(mode="json", exclude_none=True)
         headers = {"Authorization": f"Bearer {access_token}"}
 
@@ -114,7 +114,7 @@ class WWDataClient:
             raise WWDataUnavailableError("ww-data is unavailable") from exc
 
         try:
-            return TypeAdapter(list[CategorySpendingResponse]).validate_python(
+            return TypeAdapter(CategorySpendingResponse).validate_python(
                 response.json()
             )
         except (ValueError, ValidationError) as exc:

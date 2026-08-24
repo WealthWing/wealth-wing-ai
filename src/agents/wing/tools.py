@@ -90,16 +90,7 @@ async def get_spending_by_category(
 
     return _tool_result(
         result_type="spending_by_category",
-        data={
-            "categories": [
-                {
-                    "category_id": str(category.category_id),
-                    "category": category.category,
-                    "expense": category.expense,
-                }
-                for category in categories
-            ],
-        },
+        data=categories.model_dump(mode="json"),
         metadata={
             "filters": params.model_dump(mode="json", exclude_none=True),
             "source": "wealth-wing-data",

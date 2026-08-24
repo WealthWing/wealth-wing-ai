@@ -525,20 +525,22 @@ def test_wing_agent_route_returns_allowlisted_spending_by_category_results(
                             "metadata": {"source": "do not expose"},
                             "ui": "spending_by_category",
                             "data": {
-                                "categories": [
+                                "spending_by_categories": [
                                     {
                                         "category_id": "43581d15-1a1d-49ce-adc6-f0fe6184f18a",
                                         "category": "Groceries",
                                         "expense": -8423,
+                                        "transaction_count": 1,
                                         "total_spent": -8423,
                                         "category_slug": "groceries",
                                         "category_name": "Groceries",
                                         "total_cents": -8423,
-                                        "transaction_count": 1,
                                         "percent_of_total": 100,
                                         "provider_payload": "private",
                                     }
                                 ],
+                                "total_spending_by_category": -8423,
+                                "transaction_count": 1,
                                 "total_spent": -8423,
                                 "provider_payload": "private",
                             },
@@ -575,13 +577,16 @@ def test_wing_agent_route_returns_allowlisted_spending_by_category_results(
             "type": "spending_by_category",
             "ui": "spending_by_category",
             "data": {
-                "categories": [
+                "total_spending_by_category": -8423,
+                "transaction_count": 1,
+                "spending_by_categories": [
                     {
                         "category_id": "43581d15-1a1d-49ce-adc6-f0fe6184f18a",
                         "category": "Groceries",
                         "expense": -8423,
+                        "transaction_count": 1,
                     }
-                ]
+                ],
             },
         }
     ]

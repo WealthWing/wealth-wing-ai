@@ -217,14 +217,19 @@ def test_get_transactions_maps_network_failures() -> None:
     asyncio.run(run())
 
 
-def _category_spending_payload() -> list[dict[str, object]]:
-    return [
-        {
-            "category_id": CATEGORY_ID,
-            "category": "Groceries",
-            "expense": -8423,
-        }
-    ]
+def _category_spending_payload() -> dict[str, object]:
+    return {
+        "spending_by_categories": [
+            {
+                "category_id": CATEGORY_ID,
+                "category": "Groceries",
+                "expense": -8423,
+                "transaction_count": 1,
+            }
+        ],
+        "total_spending_by_category": -8423,
+        "transaction_count": 1,
+    }
 
 
 def test_get_spending_by_category_forwards_auth_and_query_parameters() -> None:
@@ -249,8 +254,10 @@ def test_get_spending_by_category_forwards_auth_and_query_parameters() -> None:
                 ),
             )
 
-        assert result[0].category == "Groceries"
-        assert result[0].expense == -8423
+        assert result.spending_by_categories[0].category == "Groceries"
+        assert result.spending_by_categories[0].expense == -8423
+        assert result.total_spending_by_category == -8423
+        assert result.transaction_count == 1
 
     asyncio.run(run())
 
@@ -276,7 +283,14 @@ def test_get_spending_by_category_omits_empty_date_bounds() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["request"] = request
-        return httpx.Response(200, json=[])
+        return httpx.Response(
+            200,
+            json={
+                "spending_by_categories": [],
+                "total_spending_by_category": 0,
+                "transaction_count": 0,
+            },
+        )
 
     async def run() -> None:
         async with httpx.AsyncClient(
@@ -288,7 +302,9 @@ def test_get_spending_by_category_omits_empty_date_bounds() -> None:
                 params=CategorySpendingParams(),
             )
 
-        assert result == []
+        assert result.spending_by_categories == []
+        assert result.total_spending_by_category == 0
+        assert result.transaction_count == 0
 
     asyncio.run(run())
 

@@ -611,7 +611,7 @@ def test_get_transactions_requires_runtime_dependencies(context: dict[str, Any])
 class FakeCategorySpendingWWDataClient:
     def __init__(
         self,
-        response: list[CategorySpendingResponse] | Exception,
+        response: CategorySpendingResponse | Exception,
     ) -> None:
         self.response = response
         self.calls: list[dict[str, Any]] = []
@@ -619,23 +619,28 @@ class FakeCategorySpendingWWDataClient:
     async def get_spending_by_category(
         self,
         **kwargs: Any,
-    ) -> list[CategorySpendingResponse]:
+    ) -> CategorySpendingResponse:
         self.calls.append(kwargs)
         if isinstance(self.response, Exception):
             raise self.response
         return self.response
 
 
-def _category_spending_response() -> list[CategorySpendingResponse]:
-    return [
-        CategorySpendingResponse.model_validate(
-            {
-                "category_id": "43581d15-1a1d-49ce-adc6-f0fe6184f18a",
-                "category": "Groceries",
-                "expense": -8423,
-            }
-        )
-    ]
+def _category_spending_response() -> CategorySpendingResponse:
+    return CategorySpendingResponse.model_validate(
+        {
+            "spending_by_categories": [
+                {
+                    "category_id": "43581d15-1a1d-49ce-adc6-f0fe6184f18a",
+                    "category": "Groceries",
+                    "expense": -8423,
+                    "transaction_count": 1,
+                }
+            ],
+            "total_spending_by_category": -8423,
+            "transaction_count": 1,
+        }
+    )
 
 
 def test_spending_toolnode_injects_runtime_context() -> None:
@@ -720,13 +725,16 @@ def test_get_spending_by_category_forwards_dates_and_returns_safe_payload() -> N
     assert result == {
         "result_type": "spending_by_category",
         "data": {
-            "categories": [
+            "spending_by_categories": [
                 {
                     "category_id": "43581d15-1a1d-49ce-adc6-f0fe6184f18a",
                     "category": "Groceries",
                     "expense": -8423,
+                    "transaction_count": 1,
                 }
-            ]
+            ],
+            "total_spending_by_category": -8423,
+            "transaction_count": 1,
         },
         "metadata": {
             "filters": {
@@ -741,7 +749,7 @@ def test_get_spending_by_category_forwards_dates_and_returns_safe_payload() -> N
 
 
 def test_get_spending_by_category_requires_dates() -> None:
-    client = FakeCategorySpendingWWDataClient([])
+    client = FakeCategorySpendingWWDataClient(_category_spending_response())
     runtime = FakeToolRuntime(
         state={},
         context={"ww_data_client": client, "access_token": "secret-token"},
@@ -770,7 +778,10 @@ def test_get_spending_by_category_rejects_invalid_filters_without_provider_call(
 
 @pytest.mark.parametrize(
     "context",
-    [{}, {"ww_data_client": FakeCategorySpendingWWDataClient([])}],
+    [
+        {},
+        {"ww_data_client": FakeCategorySpendingWWDataClient(_category_spending_response())},
+    ],
 )
 def test_get_spending_by_category_requires_runtime_dependencies(
     context: dict[str, Any],
